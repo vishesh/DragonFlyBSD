@@ -564,4 +564,8 @@ struct sysent sysent[] = {
 	{ AS(symlinkat_args), (sy_call_t *)sys_symlinkat },	/* 528 = symlinkat */
 	{ AS(swapoff_args), (sy_call_t *)sys_swapoff },	/* 529 = swapoff */
 	{ AS(vquotactl_args), (sy_call_t *)sys_vquotactl },	/* 530 = vquotactl */
+	{ 0, (sy_call_t *)sys_inotify_init },		/* 531 = inotify_init */
+	{ AS(inotify_init1_args), (sy_call_t *)sys_inotify_init1 },	/* 532 = inotify_init1 */
+	{ AS(inotify_add_watch_args), (sy_call_t *)sys_inotify_add_watch },	/* 533 = inotify_add_watch */
+	{ AS(inotify_rm_watch_args), (sy_call_t *)sys_inotify_rm_watch },	/* 534 = inotify_rm_watch */
 };

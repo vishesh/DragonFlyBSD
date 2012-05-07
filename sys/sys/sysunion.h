@@ -417,4 +417,8 @@ union sysunion {
 	struct	symlinkat_args symlinkat;
 	struct	swapoff_args swapoff;
 	struct	vquotactl_args vquotactl;
+	struct	inotify_init_args inotify_init;
+	struct	inotify_init1_args inotify_init1;
+	struct	inotify_add_watch_args inotify_add_watch;
+	struct	inotify_rm_watch_args inotify_rm_watch;
 };

@@ -902,6 +902,7 @@ kern/subr_scanf.c	standard
 kern/subr_taskqueue.c	standard
 kern/subr_rbtree.c	standard
 kern/sys_generic.c	standard
+kern/sys_linux.c	standard
 kern/sys_pipe.c		standard
 kern/sys_process.c	standard
 kern/subr_rman.c	standard

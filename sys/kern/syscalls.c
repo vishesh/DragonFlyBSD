@@ -538,4 +538,8 @@ const char *syscallnames[] = {
 	"symlinkat",			/* 528 = symlinkat */
 	"swapoff",			/* 529 = swapoff */
 	"vquotactl",			/* 530 = vquotactl */
+	"inotify_init",			/* 531 = inotify_init */
+	"inotify_init1",			/* 532 = inotify_init1 */
+	"inotify_add_watch",			/* 533 = inotify_add_watch */
+	"inotify_rm_watch",			/* 534 = inotify_rm_watch */
 };

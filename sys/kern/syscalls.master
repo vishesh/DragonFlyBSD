@@ -745,3 +745,10 @@
 529	STD	BSD	{ int swapoff(char *name); }
 530	STD	BSD	{ int vquotactl(const char *path, \
 			    struct plistref *pref); }
+
+; inotify system calls
+531	STD	BSD	{ int inotify_init(void); }
+532	STD	BSD	{ int inotify_init1(int flags); }
+533	STD	BSD	{ int inotify_add_watch(int fd, const char *pathname, uint32_t mask); }
+534	STD	BSD	{ int inotify_rm_watch(int fd, int wd); }
+
