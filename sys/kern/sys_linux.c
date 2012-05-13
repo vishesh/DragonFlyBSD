@@ -1,4 +1,4 @@
-#include <linux/inotify.h>
+#include <sys/linux/inotify.h>
 #include <sys/types.h>
 #include <sys/systm.h>
 #include <sys/sysproto.h>
