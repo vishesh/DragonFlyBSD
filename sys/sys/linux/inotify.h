@@ -84,15 +84,6 @@ struct inotify_event {
 /* Kernel API */ 
 #ifdef __KERNEL
 
-struct inotify_handle {
-	int	fd;
-	struct	inotify_watch *watches;
-};
-
-struct inotify_watch {
-	int	wd;
-	struct inotify_handle *handle;
-};
 
 
 #endif	/* __KERNEL */
