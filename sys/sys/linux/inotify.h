@@ -45,9 +45,9 @@
 
 struct inotify_event {
 	int		wd;
-	__uint32_t	mask;
-	__uint32_t	cookie;
-	__uint32_t	len;
+	uint32_t	mask;
+	uint32_t	cookie;
+	uint32_t	len;
 	char		name[0];
 };
 
@@ -83,6 +83,17 @@ struct inotify_event {
 
 /* Kernel API */ 
 #ifdef __KERNEL
+
+struct inotify_handle {
+	int	fd;
+	struct	inotify_watch *watches;
+};
+
+struct inotify_watch {
+	int	wd;
+	struct inotify_handle *handle;
+};
+
 
 #endif	/* __KERNEL */
 
