@@ -16,7 +16,6 @@ static const int inotify_max_user_watches = 8192;
 static const int inotify_max_queued_events = 16384;
 
 struct inotify_handle {
-	int		 fd;
 	struct file	*fp;
 	unsigned int	 event_count;
 	unsigned int	 max_events;
@@ -54,11 +53,9 @@ sys_inotify_init(struct inotify_init_args *args)
 	int fd;
 	int error;
 
-	kprintf("syscall => inotify_init\n");
-
 	error = falloc(td->td_lwp, &fp, &fd);
 	if (error != 0) {
-		kprintf("inotify: Error creating file structure for inotify!\n");
+		kprintf("inotify_init: Error creating file structure for inotify!\n");
 		return 0;
 	}
 
@@ -67,10 +64,8 @@ sys_inotify_init(struct inotify_init_args *args)
 
 	fp->f_data = ih;
 	ih->fp = fp;
-	ih->fd = fd;
 	fp->f_ops = &inotify_fops;
-
-	kprintf("fd of file: %d", fd);
+	fsetfd(td->td_proc->p_fd, fp, fd);
 
 	return fd;
 }
