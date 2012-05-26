@@ -53,6 +53,7 @@ static struct fileops inotify_fops = {
 };
 
 
+/* TODO: Remove hardcoded constants for inotify_max_* */
 int
 sys_inotify_init(struct inotify_init_args *args)
 {
@@ -70,9 +71,13 @@ sys_inotify_init(struct inotify_init_args *args)
 
 	ih = kmalloc(sizeof(struct inotify_handle), M_INOTIFY, M_WAITOK);
 	TAILQ_INIT(&ih->wlh);
+	ih->fp = fp;
+	ih->event_count = 0;
+	ih->queue_size = 0;
+	ih->max_events = 4096;
+	
 
 	fp->f_data = ih;
-	ih->fp = fp;
 	fp->f_ops = &inotify_fops;
 	fsetfd(td->td_proc->p_fd, fp, fd);
 
