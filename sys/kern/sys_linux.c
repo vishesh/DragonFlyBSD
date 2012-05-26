@@ -9,7 +9,7 @@
 #include <sys/types.h>
 
 MALLOC_DECLARE(M_INOTIFY);
-MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring"); 
+MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
 
 static const int inotify_max_user_instances = 128;
 static const int inotify_max_user_watches = 8192;
@@ -31,10 +31,19 @@ struct inotify_watch {
 	TAILQ_ENTRY(inotify_watch) watchlist;
 };
 
-static int  inotify_read(struct file *fp, struct uio *uio,
-		struct ucred *cred, int flags);
-static int  inotify_close(struct file *fp);
-static int  inotify_stat(struct file *fp, struct stat *fb, struct ucred *cred);
+static int	inotify_read(struct file *fp, struct uio *uio,
+			struct ucred *cred, int flags);
+static int	inotify_close(struct file *fp);
+static int	inotify_stat(struct file *fp, struct stat *fb,
+			struct ucred *cred);
+
+static int	inotify_add_watch(struct inotify_handle *ih,
+			struct inotify_watch *iw);
+static int	inotify_rm_watch(struct inotify_handle *ih,
+			struct inotify_watch *iw);
+
+static int	create_watch(int fd, const char *path, uint32_t mask,
+			struct inotify_watch **resultiw);
 
 
 static struct fileops inotify_fops = {
@@ -111,8 +120,29 @@ inotify_close(struct file *fp)
 	 */
 	return 0;
 }
+
 static int
 inotify_stat(struct file *fp, struct stat *fb, struct ucred *cred)
+{
+	return 0;
+}
+
+
+static int
+inotify_add_watch(struct inotify_handle *ih, struct inotify_watch *iw)
+{
+	return 0;
+}
+
+static int
+inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
+{
+	return 0;
+}
+
+static int
+create_watch(int fd, const char *path, uint32_t mask,
+		struct inotify_watch **resultiw)
 {
 	return 0;
 }

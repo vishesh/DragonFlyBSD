@@ -89,7 +89,7 @@ struct inotify_event {
 #endif	/* __KERNEL */
 
 /* User API */
-#if !defined(_KERNEL) || defined(_KERNEL_VIRTUAL)
+#if !defined(_KERNEL)
 
 #include <sys/cdefs.h>
 
