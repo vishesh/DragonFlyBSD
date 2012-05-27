@@ -82,7 +82,7 @@ static int	inotify_close(struct file *fp);
 static int	inotify_stat(struct file *fp, struct stat *fb,
 			struct ucred *cred);
 
-static int	inotify_add_watch(struct inotify_handle *ih, 
+static int	inotify_add_watch(struct inotify_handle *ih,
 			const char *pathname, uint32_t mask);
 static int	inotify_rm_watch(struct inotify_handle *ih,
 			struct inotify_watch *iw);
@@ -162,6 +162,7 @@ sys_inotify_init1(struct inotify_init1_args *args)
 	return 0;
 }
 
+/* TODO: Add files under a given directory */
 int
 sys_inotify_add_watch(struct inotify_add_watch_args *args)
 {
@@ -231,6 +232,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 		kprintf("inotify_add_watch: filedesc table full\n");
 		fsetfd(inotify_wfdp, NULL, wd);
 		fp_close(fp);
+		/* TODO: Check other cleaups required. Unreserve fd? */
 		return (error);
 	}
 
