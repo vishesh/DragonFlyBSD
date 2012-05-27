@@ -45,9 +45,10 @@
 #include <sys/sysproto.h>
 #include <sys/types.h>
 
-
 MALLOC_DECLARE(M_INOTIFY);
 MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
+
+/* TODO: Global limits. Make it changable runtime as well? */
 
 static const int inotify_max_user_instances = 128;
 static const int inotify_max_user_watches = 8192;
@@ -63,6 +64,7 @@ struct inotify_handle {
 	TAILQ_HEAD(, inotify_watch) wlh;
 };
 
+/* TODO: Modify it for directories */
 struct inotify_watch {
 	int		 wd;
 	uint32_t	 mask;
@@ -87,6 +89,7 @@ static void	fdgrow_locked(struct filedesc *fdp, int want)
 static void	fdreserve_locked(struct filedesc *fdp, int fd, int incr)
 
 
+/*TODO: Any other operations? fcntl? */
 static struct fileops inotify_fops = {
 	.fo_read = inotify_read,
 	.fo_close = inotify_close,
@@ -124,7 +127,9 @@ sys_inotify_init(struct inotify_init_args *args)
 	error = falloc(td->td_lwp, &fp, &fd);
 	if (error != 0) {
 		kprintf("inotify_init: Error creating file structure for inotify!\n");
-		return 0;
+		args->sysmsg_iresult = -1;
+		/* TODO: Set errorno */
+		return (error);
 	}
 
 	ih = kmalloc(sizeof(struct inotify_handle), M_INOTIFY, M_WAITOK);
@@ -132,7 +137,7 @@ sys_inotify_init(struct inotify_init_args *args)
 	ih->fp = fp;
 	ih->event_count = 0;
 	ih->queue_size = 0;
-	ih->max_events = 4096;
+	ih->max_events = inotify_max_queued_events; /*TODO: Make it work? */
 
 	fp->f_data = ih;
 	fp->f_ops = &inotify_fops;
@@ -154,7 +159,7 @@ sys_inotify_init1(struct inotify_init1_args *args)
 	return 0;
 }
 
-/* TODO: DOesnt adds directories yet */
+/* TODO: Add files under a given directory */
 int
 sys_inotify_add_watch(struct inotify_add_watch_args *args)
 {
@@ -166,26 +171,31 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	int error;
 
 	/*
-	 * Find old watch if exists and update it
-	 * otherwise append the new one
+	 * TODO: Find old watch if exists and update it otherwise append the
+	 *       new one
 	 */
 
 	fp = proc->p_fd->fd_files[fd].fp;
 	ih = (struct inotify_handle*)fp->f_data;
 
 	if (fp->f_ops != &inotify_fops) {
+		args->sysmsg_iresult = -1;
+		/* TODO: set errno. */
 		return (EBADF);
 	}
 
 	error = copyinstr(args->pathname, path, MAXPATHLEN, NULL);
-	/* XXX handle copyinstr error  */
+	/* TODO: handle copyinstr error  */
 	error = inotify_add_watch(ih, path, args->mask);
 	if (error != 0) {
 		kprintf("inotify_add_watch syscall: Error adding watch!\n");
+		/* TODO: Set errono */
+		args->sysmsg_iresult = fd;
+		return (error);
 	}
 
 	args->sysmsg_iresult = fd;
-	return error;
+	return (error);
 }
 
 static int
@@ -205,7 +215,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t mask)
 	if (error != 0) {
 		kprintf("inotify_add_watch: filedesc table full\n");
 		fp_close(fp);
-		/* TODO: Check other cleaups required */
+		/* TODO: Check other cleaups required. Unreserve fd? */
 		return (error);
 	}
 
@@ -395,7 +405,7 @@ inotify_fdalloc(struct filedesc *fdp, int want, int *result)
 	/*struct uidinfo *uip;*/
 	int fd, rsize, rsum, node, lim;
 
-	lim = 2048;
+	lim = 2048; /* TODO: Set it to global opened file limit */
 
 	/* TODO: Check if user has run out of watch limit */
 
