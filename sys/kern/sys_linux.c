@@ -34,11 +34,14 @@
  */
 
 #include <sys/linux/inotify.h>
+#include <sys/dirent.h>
 #include <sys/file.h>
 #include <sys/file2.h>
 #include <sys/filedesc.h>
+#include <sys/kern_syscall.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
+#include <sys/nlookup.h>
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/spinlock2.h>
@@ -47,9 +50,15 @@
 #include <sys/sysproto.h>
 #include <sys/types.h>
 
+/*XXX Where is this constant in headers? */
+#ifndef MAXNAMELEN
+#define MAXNAMELEN 255
+#endif
+
 MALLOC_DECLARE(M_INOTIFY);
 MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
 
+/* TODO: Put all main work of sys_* in kern_* */
 /* TODO: Global limits. Make it changable runtime as well? */
 
 static const int inotify_max_user_instances = 128;
@@ -66,7 +75,6 @@ struct inotify_handle {
 	TAILQ_HEAD(, inotify_watch) wlh;
 };
 
-/* TODO: Modify it for directories */
 struct inotify_watch {
 	int		 wd;
 	uint32_t	 mask;
@@ -203,12 +211,19 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 static int
 inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask)
 {
-	struct ucred *cred = curthread->td_ucred;
-	struct stat st;
+	struct thread *td = curthread;
+	struct ucred *cred = td->td_ucred;
 	struct file *fp;
 	struct inotify_watch *iw;
-	int error, wd = -1, pathlen;
-	char path[MAXPATHLEN];
+	int pathlen, wd = -1, error;
+
+	/*NOTE: for scanning directory. Will move to separate function perhaps */
+	struct stat st;
+	struct dirent *direp;
+	int nfd, dblen;
+	struct nlookupdata nd;
+	char path[MAXPATHLEN], *dbuf;
+	u_int dcount = (sizeof(struct dirent) + (MAXNAMELEN+1)) * inotify_max_user_watches;
 
 	error = copyinstr(pathname, path, MAXPATHLEN, &pathlen);
 	if (error == 0 && pathlen <= 1) {
@@ -221,18 +236,12 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 		return (error);
 	}
 
-	fo_stat(fp, &st, cred);
-	if (st.st_mode & S_IFDIR) {
-		kprintf("inotify_add_watch: Got a directory to add.\n");
-		/* TODO: Do approproiate */
-	}
-
 	error = inotify_fdalloc(inotify_wfdp, 1, &wd);
 	if (error != 0) {
 		kprintf("inotify_add_watch: filedesc table full\n");
-		fsetfd(inotify_wfdp, NULL, wd);
 		fp_close(fp);
 		/* TODO: Check other cleaups required. Unreserve fd? */
+		fsetfd(inotify_wfdp, NULL, wd);
 		return (error);
 	}
 
@@ -240,8 +249,54 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 	iw->fp = fp;
 	iw->mask = mask;
 	iw->wd = wd;
+	iw->parent = NULL;
 	fsetfd(inotify_wfdp, fp, wd);
 	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
+
+	/* Now check if its a directory and get the entries */
+	fo_stat(fp, &st, cred);
+	if (st.st_mode & S_IFDIR) {
+		kprintf("inotify_add_watch: Got a directory to add.\n");
+
+		/*TODO: Check if this lookup can be reused while opening orig */
+		error = nlookup_init(&nd, path, UIO_SYSSPACE, 0);
+		if (error != 0) {
+			/* XXX Cleanup */
+			return (error);
+		}
+		error = kern_open(&nd, O_RDONLY, 0400, &nfd);
+		/* TODO: Handle error */
+		nlookup_done(&nd);
+
+		/* TODO: What about large directories? Can we continue from a point? */
+		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK); 
+		error = kern_getdirentries(nfd, dbuf, dcount, NULL, &dblen, UIO_SYSSPACE);
+		if (error != 0) {
+			kprintf("inotify_add_watch: error retrieving directories\n");
+			/* TODO: Cleanup */
+			return (error);
+		}
+		kern_close(nfd); /* right way? */
+
+		/*spin_lock(&fdp->fd_spin);*/
+		/*fdp->fd_files[nfd].fp = NULL;*/
+		/*fdp->fd_files[nfd].fileflags = 0;*/
+		/*fdp->fd_files[nfd].reserved = 1;*/
+		/*spin_unlock(&proc->p_fd->fd_spin);*/
+		/*atomic_add_int(&fp->f_count, -1);*/
+		/*fsetfd(fdp, NULL, nfd);*/
+
+		for (direp = (struct dirent *)dbuf; (char*)direp < dbuf + dblen;
+				direp = _DIRENT_NEXT(direp)) {
+			if ((char *)_DIRENT_NEXT(direp) > dbuf + dblen)
+				break;
+			if (direp->d_namlen > MAXNAMELEN)
+				continue;
+
+			/* TODO: Add the entry to watchlist if not file */
+		}
+		kfree(dbuf, M_INOTIFY);
+	}
 
 	return (error);
 }
