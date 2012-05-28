@@ -276,6 +276,9 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 
 		/* TODO: What about large directories? Can we continue from a point? */
 		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK); 
+		/* XXX: make this read after basep, to work with large dirs
+		 * and limited buffer 
+		 */
 		error = kern_getdirentries(nfd, dbuf, dcount, NULL, &dblen, UIO_SYSSPACE);
 		if (error != 0) {
 			kprintf("inotify_add_watch: error retrieving directories\n");
