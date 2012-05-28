@@ -40,6 +40,7 @@
 #include <sys/filedesc.h>
 #include <sys/kern_syscall.h>
 #include <sys/kernel.h>
+#include <sys/libkern.h>
 #include <sys/malloc.h>
 #include <sys/nlookup.h>
 #include <sys/param.h>
@@ -91,7 +92,7 @@ static int	inotify_stat(struct file *fp, struct stat *fb,
 			struct ucred *cred);
 
 static int	inotify_add_watch(struct inotify_handle *ih,
-			const char *pathname, uint32_t mask);
+			const char *pathname, uint32_t mask, int *res);
 static int	inotify_rm_watch(struct inotify_handle *ih,
 			struct inotify_watch *iw);
 
@@ -177,8 +178,7 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	struct proc *proc = curthread->td_proc;
 	struct file *fp;
 	struct inotify_handle *ih;
-	int fd = args->fd;
-	int error;
+	int fd = args->fd, error, res = -1;
 
 	/*
 	 * TODO: Find old watch if exists and update it otherwise append the
@@ -194,7 +194,7 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 		return (EBADF);
 	}
 
-	error = inotify_add_watch(ih, args->pathname, args->mask);
+	error = inotify_add_watch(ih, args->pathname, args->mask, &res);
 	if (error != 0) {
 		kprintf("inotify_add_watch syscall: Error adding watch!\n");
 		/* TODO: See errono */
@@ -202,27 +202,36 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 		return (error);
 	}
 
-	args->sysmsg_iresult = fd;
+	args->sysmsg_iresult = res;
 	return (error);
 }
 
+#define INOTIFY_WATCH_INIT(_iw, _fp, _wd, _mask, _parent) do {		       \
+	(_iw) = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);    \
+	(_iw)->fp = (_fp);						       \
+	(_iw)->mask = (_mask);						       \
+	(_iw)->wd = (_wd);						       \
+	(_iw)->parent = (_parent);					       \
+} while (0)
+
 /*TODO: Check user permission to read file */
 /*TODO: Add files under a given directory */
+/*TODO: Make it smaller */
 static int
-inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask)
+inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask, int *res)
 {
 	struct thread *td = curthread;
 	struct ucred *cred = td->td_ucred;
-	struct file *fp;
-	struct inotify_watch *iw;
+	struct file *fp, *nfp;
+	struct inotify_watch *iw, *siw;
 	int pathlen, wd = -1, error;
 
 	/*NOTE: for scanning directory. Will move to separate function perhaps */
 	struct stat st;
 	struct dirent *direp;
-	int nfd, dblen;
+	int nfd, nwd, dblen;
 	struct nlookupdata nd;
-	char path[MAXPATHLEN], *dbuf;
+	char path[MAXPATHLEN], subpath[MAXPATHLEN], *dbuf;
 	u_int dcount = (sizeof(struct dirent) + (MAXNAMELEN+1)) * inotify_max_user_watches;
 
 	error = copyinstr(pathname, path, MAXPATHLEN, &pathlen);
@@ -238,20 +247,12 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 
 	error = inotify_fdalloc(inotify_wfdp, 1, &wd);
 	if (error != 0) {
-		kprintf("inotify_add_watch: filedesc table full\n");
 		fp_close(fp);
-		/* TODO: Check other cleaups required. Unreserve fd? */
 		fsetfd(inotify_wfdp, NULL, wd);
 		return (error);
 	}
 
-	iw = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);
-	iw->fp = fp;
-	iw->mask = mask;
-	iw->wd = wd;
-	iw->parent = NULL;
-	fsetfd(inotify_wfdp, fp, wd);
-	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
+	INOTIFY_WATCH_INIT(iw, fp, wd, mask, NULL);
 
 	/* Now check if its a directory and get the entries */
 	fo_stat(fp, &st, cred);
@@ -261,31 +262,33 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 		/*TODO: Check if this lookup can be reused while opening orig */
 		error = nlookup_init(&nd, path, UIO_SYSSPACE, 0);
 		if (error != 0) {
-			/* XXX Cleanup */
+			fp_close(fp);
+			kfree(iw, M_INOTIFY);
 			return (error);
 		}
 		error = kern_open(&nd, O_RDONLY, 0400, &nfd);
-		/* TODO: Handle error */
 		nlookup_done(&nd);
+		if (error != 0) {
+			fp_close(fp);
+			kfree(iw, M_INOTIFY);
+			return (error);
+		}
 
 		/* TODO: What about large directories? Can we continue from a point? */
 		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK); 
 		error = kern_getdirentries(nfd, dbuf, dcount, NULL, &dblen, UIO_SYSSPACE);
 		if (error != 0) {
 			kprintf("inotify_add_watch: error retrieving directories\n");
-			/* TODO: Cleanup */
+			fp_close(fp);
+			kfree(iw, M_INOTIFY);
+			kfree(dbuf, M_INOTIFY);
+			kern_close(nfd);
 			return (error);
 		}
-		kern_close(nfd); /* right way? */
+		kern_close(nfd);
 
-		/*spin_lock(&fdp->fd_spin);*/
-		/*fdp->fd_files[nfd].fp = NULL;*/
-		/*fdp->fd_files[nfd].fileflags = 0;*/
-		/*fdp->fd_files[nfd].reserved = 1;*/
-		/*spin_unlock(&proc->p_fd->fd_spin);*/
-		/*atomic_add_int(&fp->f_count, -1);*/
-		/*fsetfd(fdp, NULL, nfd);*/
-
+		strcpy(subpath, path);
+		strcat(subpath, "/");
 		for (direp = (struct dirent *)dbuf; (char*)direp < dbuf + dblen;
 				direp = _DIRENT_NEXT(direp)) {
 			if ((char *)_DIRENT_NEXT(direp) > dbuf + dblen)
@@ -293,11 +296,51 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 			if (direp->d_namlen > MAXNAMELEN)
 				continue;
 
-			/* TODO: Add the entry to watchlist if not file */
+			/* now check if given entry is again directory
+			 * and this time we ignore them 
+			 */
+			if ( strcmp(direp->d_name, ".") == 0 ||
+					strcmp(direp->d_name, "..") == 0) {
+				continue;
+			}
+			strcpy(subpath + pathlen, direp->d_name);
+			/*kprintf("pathlen = %d | ", pathlen);*/
+			/*kprintf("opening %s | subpath = %s | path = %s\n", */
+					/*subpath, direp->d_name, path);*/
+			error = fp_open(subpath, O_RDONLY, 0400, &nfp);
+			if (error != 0) {
+				kprintf("inotify_add_watch: Error opening file! \n");
+				return (error);
+			}
+
+			fo_stat(nfp, &st, cred);
+			if (st.st_mode & S_IFDIR) {
+				fp_close(nfp);
+				continue;
+			} else {
+				error = inotify_fdalloc(inotify_wfdp, 1, &nwd);
+				if (error != 0) {
+					fp_close(nfp);
+					fp_close(fp);
+					kfree(iw, M_INOTIFY);
+					kfree(dbuf, M_INOTIFY);
+					fsetfd(inotify_wfdp, NULL, nwd);
+					fsetfd(inotify_wfdp, NULL, wd);
+					return (error);
+				}
+				fsetfd(inotify_wfdp, nfp, nwd);
+				INOTIFY_WATCH_INIT(siw, nfp, nwd, mask, iw);
+				TAILQ_INSERT_TAIL(&ih->wlh, siw, watchlist);
+				kprintf("Adding => %s\n", direp->d_name);
+			}
 		}
 		kfree(dbuf, M_INOTIFY);
 	}
 
+	fsetfd(inotify_wfdp, fp, wd);
+	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
+
+	*res = wd;
 	return (error);
 }
 
