@@ -59,7 +59,6 @@
 MALLOC_DECLARE(M_INOTIFY);
 MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
 
-/* TODO: Put all main work of sys_* in kern_* */
 /* TODO: Global limits. Make it changable runtime as well? */
 
 static const int inotify_max_user_instances = 128;
@@ -171,7 +170,6 @@ sys_inotify_init1(struct inotify_init1_args *args)
 	return 0;
 }
 
-/* TODO: Add files under a given directory */
 int
 sys_inotify_add_watch(struct inotify_add_watch_args *args)
 {
@@ -215,7 +213,6 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 } while (0)
 
 /*TODO: Check user permission to read file */
-/*TODO: Add files under a given directory */
 /*TODO: Make it smaller */
 static int
 inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask, int *res)
