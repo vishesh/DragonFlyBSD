@@ -37,7 +37,6 @@
 #include <sys/dirent.h>
 #include <sys/file.h>
 #include <sys/file2.h>
-#include <sys/filedesc.h>
 #include <sys/kern_syscall.h>
 #include <sys/kernel.h>
 #include <sys/libkern.h>
@@ -49,7 +48,6 @@
 #include <sys/stat.h>
 #include <sys/systm.h>
 #include <sys/sysproto.h>
-#include <sys/types.h>
 
 /*XXX Where is this constant in headers? */
 #ifndef MAXNAMELEN
@@ -60,29 +58,11 @@ MALLOC_DECLARE(M_INOTIFY);
 MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
 
 /* TODO: Global limits. Make it changable runtime as well? */
-
 static const int inotify_max_user_instances = 128;
 static const int inotify_max_user_watches = 8192;
 static const int inotify_max_queued_events = 16384;
 
 static struct filedesc *inotify_wfdp = NULL;
-
-struct inotify_handle {
-	struct file	*fp;
-	unsigned int	 event_count;
-	unsigned int	 max_events;
-	unsigned int	 queue_size;
-	TAILQ_HEAD(, inotify_watch) wlh;
-};
-
-struct inotify_watch {
-	int		 wd;
-	uint32_t	 mask;
-	struct file	*fp;
-	struct inotify_handle *handle;
-	struct inotify_watch  *parent;
-	TAILQ_ENTRY(inotify_watch) watchlist;
-};
 
 static int	inotify_read(struct file *fp, struct uio *uio,
 			struct ucred *cred, int flags);
@@ -223,7 +203,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 	struct inotify_watch *iw, *siw;
 	int pathlen, wd = -1, error;
 
-	/*NOTE: for scanning directory. Will move to separate function perhaps */
 	struct stat st;
 	struct dirent *direp;
 	int nfd, nwd, dblen;
@@ -271,7 +250,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 			return (error);
 		}
 
-		/* TODO: What about large directories? Can we continue from a point? */
 		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK); 
 		/* XXX: make this read after basep, to work with large dirs
 		 * and limited buffer 
@@ -304,9 +282,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 				continue;
 			}
 			strcpy(subpath + pathlen, direp->d_name);
-			/*kprintf("pathlen = %d | ", pathlen);*/
-			/*kprintf("opening %s | subpath = %s | path = %s\n", */
-					/*subpath, direp->d_name, path);*/
+
 			error = fp_open(subpath, O_RDONLY, 0400, &nfp);
 			if (error != 0) {
 				kprintf("inotify_add_watch: Error opening file! \n");
