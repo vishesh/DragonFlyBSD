@@ -123,6 +123,7 @@ struct inotify_handle {
 	unsigned int	 event_count;
 	unsigned int	 max_events;
 	unsigned int	 queue_size;
+	struct filedesc	*wfdp;
 	TAILQ_HEAD(, inotify_watch) wlh;
 };
 

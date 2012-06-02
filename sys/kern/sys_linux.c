@@ -62,8 +62,6 @@ static const int inotify_max_user_instances = 128;
 static const int inotify_max_user_watches = 8192;
 static const int inotify_max_queued_events = 16384;
 
-static struct filedesc *inotify_wfdp = NULL;
-
 static int	inotify_read(struct file *fp, struct uio *uio,
 			struct ucred *cred, int flags);
 static int	inotify_close(struct file *fp);
@@ -135,9 +133,7 @@ sys_inotify_init(struct inotify_init_args *args)
 	fp->f_flag = O_RDONLY;
 	fsetfd(td->td_proc->p_fd, fp, fd);
 
-	if (inotify_wfdp == NULL) {
-		inotify_wfdinit(&inotify_wfdp);
-	}
+	inotify_wfdinit(&ih->wfdp);
 
 	args->sysmsg_iresult = fd;
 	return (error);
@@ -221,10 +217,10 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 		return (error);
 	}
 
-	error = inotify_fdalloc(inotify_wfdp, 1, &wd);
+	error = inotify_fdalloc(ih->wfdp, 1, &wd);
 	if (error != 0) {
 		fp_close(fp);
-		fsetfd(inotify_wfdp, NULL, wd);
+		fsetfd(ih->wfdp, NULL, wd);
 		return (error);
 	}
 
@@ -294,17 +290,17 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 				fp_close(nfp);
 				continue;
 			} else {
-				error = inotify_fdalloc(inotify_wfdp, 1, &nwd);
+				error = inotify_fdalloc(ih->wfdp, 1, &nwd);
 				if (error != 0) {
 					fp_close(nfp);
 					fp_close(fp);
 					kfree(iw, M_INOTIFY);
 					kfree(dbuf, M_INOTIFY);
-					fsetfd(inotify_wfdp, NULL, nwd);
-					fsetfd(inotify_wfdp, NULL, wd);
+					fsetfd(ih->wfdp, NULL, nwd);
+					fsetfd(ih->wfdp, NULL, wd);
 					return (error);
 				}
-				fsetfd(inotify_wfdp, nfp, nwd);
+				fsetfd(ih->wfdp, nfp, nwd);
 				INOTIFY_WATCH_INIT(siw, nfp, nwd, mask, iw);
 				TAILQ_INSERT_TAIL(&ih->wlh, siw, watchlist);
 				kprintf("Adding => %s\n", direp->d_name);
@@ -313,7 +309,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 		kfree(dbuf, M_INOTIFY);
 	}
 
-	fsetfd(inotify_wfdp, fp, wd);
+	fsetfd(ih->wfdp, fp, wd);
 	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
 
 	*res = wd;
