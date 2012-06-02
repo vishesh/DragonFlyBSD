@@ -85,23 +85,6 @@ static struct fileops inotify_fops = {
 	.fo_stat = inotify_stat
 };
 
-static __inline void
-inotify_wfdinit(struct filedesc **fdp)
-{
-	/*fdp = kmalloc(sizeof(struct filedesc), M_INOTIFY,*/
-			/*M_WAITOK | M_ZERO);*/
-
-	/*fdp->fd_refcnt = 1;*/
-	/*fdp->fd_cmask = 022;*/
-	/*fdp->fd_files = fdp->fd_builtin_files;*/
-	/*fdp->fd_nfiles = NDFILE;*/
-	/*fdp->fd_lastfile = -1;*/
-	/*spin_init(&fdp->fd_spin);*/
-
-	/* TODO: Make our own fdinit */
-	*fdp = fdinit(curthread->td_proc);
-}
-
 /* TODO: lock shared data */
 /* TODO: Remove hardcoded constants for inotify_max_* */
 int
@@ -133,7 +116,7 @@ sys_inotify_init(struct inotify_init_args *args)
 	fp->f_flag = O_RDONLY;
 	fsetfd(td->td_proc->p_fd, fp, fd);
 
-	inotify_wfdinit(&ih->wfdp);
+	*fdp = fdinit(curthread->td_proc);
 
 	args->sysmsg_iresult = fd;
 	return (error);
