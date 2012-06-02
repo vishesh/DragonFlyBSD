@@ -131,6 +131,8 @@ struct inotify_watch {
 	int		 wd;
 	uint32_t	 mask;
 	struct file	*fp;
+	uint32_t	 pathlen;
+	char		*pathname;
 	struct inotify_handle *handle;
 	struct inotify_watch  *parent;
 	TAILQ_ENTRY(inotify_watch) watchlist;

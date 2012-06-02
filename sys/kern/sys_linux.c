@@ -57,7 +57,7 @@
 MALLOC_DECLARE(M_INOTIFY);
 MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
 
-/* TODO: Global limits. Make it changable runtime as well? */
+/* TODO: Global limits. Integrate with sysctl */
 static const int inotify_max_user_instances = 128;
 static const int inotify_max_user_watches = 8192;
 static const int inotify_max_queued_events = 16384;
@@ -77,6 +77,8 @@ static int	inotify_fdalloc(struct filedesc *fdp, int want, int *result);
 static void	fdgrow_locked(struct filedesc *fdp, int want);
 static void	fdreserve_locked(struct filedesc *fdp, int fd, int incr);
 
+static struct inotify_watch*	inotify_find_watchwd(struct inotify_handle *ih, int wd);
+static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih, const char *path);
 
 /*TODO: Any other operations? fcntl? */
 static struct fileops inotify_fops = {
@@ -85,7 +87,6 @@ static struct fileops inotify_fops = {
 	.fo_stat = inotify_stat
 };
 
-/* TODO: lock shared data */
 /* TODO: Remove hardcoded constants for inotify_max_* */
 int
 sys_inotify_init(struct inotify_init_args *args)
@@ -116,7 +117,7 @@ sys_inotify_init(struct inotify_init_args *args)
 	fp->f_flag = O_RDONLY;
 	fsetfd(td->td_proc->p_fd, fp, fd);
 
-	*fdp = fdinit(curthread->td_proc);
+	ih->wfdp = fdinit(curthread->td_proc);
 
 	args->sysmsg_iresult = fd;
 	return (error);
@@ -163,16 +164,18 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	return (error);
 }
 
-#define INOTIFY_WATCH_INIT(_iw, _fp, _wd, _mask, _parent) do {		       \
+#define INOTIFY_WATCH_INIT(_iw, _fp, _wd, _mask, _parent, _path, _pathlen) do {\
 	(_iw) = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);    \
 	(_iw)->fp = (_fp);						       \
 	(_iw)->mask = (_mask);						       \
 	(_iw)->wd = (_wd);						       \
 	(_iw)->parent = (_parent);					       \
+	(_iw)->pathname = kmalloc(_pathlen + 1, M_INOTIFY, M_WAITOK);	       \
+	(_iw)->pathlen = _pathlen;					       \
+	strcpy((_iw)->pathname, _path);					       \
 } while (0)
 
 /*TODO: Check user permission to read file */
-/*TODO: Make it smaller */
 static int
 inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask, int *res)
 {
@@ -185,6 +188,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 	struct stat st;
 	struct dirent *direp;
 	int nfd, nwd, dblen;
+	uint32_t subpathlen;
 	struct nlookupdata nd;
 	char path[MAXPATHLEN], subpath[MAXPATHLEN], *dbuf;
 	u_int dcount = (sizeof(struct dirent) + (MAXNAMELEN+1)) * inotify_max_user_watches;
@@ -207,14 +211,13 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 		return (error);
 	}
 
-	INOTIFY_WATCH_INIT(iw, fp, wd, mask, NULL);
+	INOTIFY_WATCH_INIT(iw, fp, wd, mask, NULL, path, pathlen);
 
 	/* Now check if its a directory and get the entries */
 	fo_stat(fp, &st, cred);
 	if (st.st_mode & S_IFDIR) {
 		kprintf("inotify_add_watch: Got a directory to add.\n");
 
-		/*TODO: Check if this lookup can be reused while opening orig */
 		error = nlookup_init(&nd, path, UIO_SYSSPACE, 0);
 		if (error != 0) {
 			fp_close(fp);
@@ -261,6 +264,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 				continue;
 			}
 			strcpy(subpath + pathlen, direp->d_name);
+			subpathlen = pathlen + direp->d_namlen + 1;
 
 			error = fp_open(subpath, O_RDONLY, 0400, &nfp);
 			if (error != 0) {
@@ -284,7 +288,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask
 					return (error);
 				}
 				fsetfd(ih->wfdp, nfp, nwd);
-				INOTIFY_WATCH_INIT(siw, nfp, nwd, mask, iw);
+				INOTIFY_WATCH_INIT(siw, nfp, nwd, mask, iw, subpath, subpathlen);
 				TAILQ_INSERT_TAIL(&ih->wlh, siw, watchlist);
 				kprintf("Adding => %s\n", direp->d_name);
 			}
@@ -304,21 +308,22 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 {
 	/* Nothing related to rm_watch. Just prototyping */
 	struct proc *proc = curthread->td_proc;
-	struct file *fp;
+	struct file *ifp;
 	struct inotify_handle *ih;
 	struct inotify_watch *iw;
 	int fd = args->fd;
-	/*int error;*/
+	int error = 0;
 
-	kprintf("syscall => inotify_rm_watch");
-
-	fp = proc->p_fd->fd_files[fd].fp;
-	ih = (struct inotify_handle*)fp->f_data;
+	ifp = proc->p_fd->fd_files[fd].fp;
+	ih = (struct inotify_handle*)ifp->f_data;
 
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
-		kprintf("Now iterated => %d \n", iw->wd);
+		kprintf("Now iterated => %s \n", iw->pathname);
 	}
-	return 0;
+
+	inotify_find_watchwd(ih, 1);
+	inotify_find_watch(NULL, NULL);
+	return (error);
 }
 
 
@@ -341,7 +346,6 @@ inotify_close(struct file *fp)
 	 */
 
 	/* Just to make it compile. Warnig treated as error. */
-	inotify_stat(0, 0, 0);
 	inotify_rm_watch(0, 0);
 	return 0;
 }
@@ -358,6 +362,25 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	return 0;
 }
 
+
+static struct inotify_watch*
+inotify_find_watchwd(struct inotify_handle *ih, int wd)
+{	
+	struct inotify_watch *iw;
+
+	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
+		if (iw->wd == wd)
+			return iw;
+	}
+	return NULL;
+
+}
+
+static struct inotify_watch*
+inotify_find_watch(struct inotify_handle *ih, const char *path)
+{
+	return NULL;
+}
 
 /* NOTE: Following are  Copied from fdalloc and modified */
 
@@ -475,7 +498,7 @@ inotify_fdalloc(struct filedesc *fdp, int want, int *result)
 	/*struct uidinfo *uip;*/
 	int fd, rsize, rsum, node, lim;
 
-	lim = 2048; /* TODO: Set it to global opened file limit */
+	lim = inotify_max_user_watches;
 
 	/* TODO: Check if user has run out of watch limit */
 
