@@ -72,6 +72,7 @@ static int	inotify_add_watch(struct inotify_handle *ih,
 			const char *path, uint32_t pathlen, uint32_t mask, int *res);
 static int	inotify_rm_watch(struct inotify_handle *ih,
 			struct inotify_watch *iw);
+static void	inotify_delete_watch(struct inotify_watch *iw);
 
 static int	inotify_fdalloc(struct filedesc *fdp, int want, int *result);
 static void	fdgrow_locked(struct filedesc *fdp, int want);
@@ -331,6 +332,7 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 	}
 
 	inotify_find_watchwd(ih, 1);
+	inotify_rm_watch(0, 0);
 	return (error);
 }
 
@@ -347,15 +349,52 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 
 static int
 inotify_close(struct file *fp)
-{
-	/*
-	 * Unset fd and walk through all watches, and destroy them
-	 * and close all the opened files
-	 */
+{	
+	struct proc *proc = curthread->td_proc;
+	struct inotify_handle *ih;
+	struct inotify_watch *iw;
+	struct filedesc *fdp;
 
-	/* Just to make it compile. Warnig treated as error. */
-	inotify_rm_watch(0, 0);
+	kprintf("called close\n");
+	ih = (struct inotify_handle*)fp->f_data;
+	fdp = ih->wfdp;
+
+	while ( (iw = TAILQ_FIRST(&ih->wlh)) != NULL )
+		inotify_delete_watch(iw);
+
+	/*if (fdp->fd_files != fdp->fd_builtin_files)*/
+		/*kfree(fdp->fd_files, M_INOTIFY); [>XXX: Should be M_FILEDESC <]*/
+	/*if (fdp->fd_cdir) {*/
+		/*cache_drop(&fdp->fd_ncdir);*/
+		/*vrele(fdp->fd_cdir);*/
+	/*}*/
+	/*if (fdp->fd_rdir) {*/
+		/*cache_drop(&fdp->fd_nrdir);*/
+		/*vrele(fdp->fd_rdir);*/
+	/*}*/
+	/*if (fdp->fd_jdir) {*/
+		/*cache_drop(&fdp->fd_njdir);*/
+		/*vrele(fdp->fd_jdir);*/
+	/*}*/
+
+	/*kfree(fdp, M_INOTIFY); [>XXX: Should be M_FILEDESC <]*/
+
+	fdrop(ih->fp);
+	fdfree(proc, fdp);
+	kfree(iw, M_INOTIFY);
+	kfree(ih, M_INOTIFY);
+
 	return 0;
+}
+
+
+static void
+inotify_delete_watch(struct inotify_watch *iw)
+{
+	kprintf("deleting %s\n", iw->pathname);
+	fp_close(iw->fp);
+	kfree(iw->pathname, M_INOTIFY);
+	TAILQ_REMOVE(&iw->handle->wlh, iw, watchlist);
 }
 
 static int
@@ -369,7 +408,6 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 {
 	return 0;
 }
-
 
 static struct inotify_watch*
 inotify_find_watchwd(struct inotify_handle *ih, int wd)
