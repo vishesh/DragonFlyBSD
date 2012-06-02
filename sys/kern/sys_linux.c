@@ -69,7 +69,7 @@ static int	inotify_stat(struct file *fp, struct stat *fb,
 			struct ucred *cred);
 
 static int	inotify_add_watch(struct inotify_handle *ih,
-			const char *pathname, uint32_t mask, int *res);
+			const char *path, uint32_t pathlen, uint32_t mask, int *res);
 static int	inotify_rm_watch(struct inotify_handle *ih,
 			struct inotify_watch *iw);
 
@@ -78,7 +78,8 @@ static void	fdgrow_locked(struct filedesc *fdp, int want);
 static void	fdreserve_locked(struct filedesc *fdp, int fd, int incr);
 
 static struct inotify_watch*	inotify_find_watchwd(struct inotify_handle *ih, int wd);
-static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih, const char *path);
+static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih, 
+							const char *path);
 
 /*TODO: Any other operations? fcntl? */
 static struct fileops inotify_fops = {
@@ -136,12 +137,10 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	struct proc *proc = curthread->td_proc;
 	struct file *fp;
 	struct inotify_handle *ih;
+	struct inotify_watch *iht;
+	char path[MAXPATHLEN];
 	int fd = args->fd, error, res = -1;
-
-	/*
-	 * TODO: Find old watch if exists and update it otherwise append the
-	 *       new one
-	 */
+	uint32_t pathlen;
 
 	fp = proc->p_fd->fd_files[fd].fp;
 	ih = (struct inotify_handle*)fp->f_data;
@@ -152,7 +151,21 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 		return (EBADF);
 	}
 
-	error = inotify_add_watch(ih, args->pathname, args->mask, &res);
+	error = copyinstr(args->pathname, path, MAXPATHLEN, &pathlen);
+	if (error == 0 && pathlen <= 1) {
+		return (ENOENT);
+	}
+
+	iht = inotify_find_watch(ih, path);
+	if (iht != NULL) {
+		kprintf("updating watch\n");
+		iht->mask = args->mask;
+		res = iht->wd;
+		error = 0;
+		goto done;
+	}
+
+	error = inotify_add_watch(ih, path, pathlen, args->mask, &res);
 	if (error != 0) {
 		kprintf("inotify_add_watch syscall: Error adding watch!\n");
 		/* TODO: See errono */
@@ -160,6 +173,7 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 		return (error);
 	}
 
+done:
 	args->sysmsg_iresult = res;
 	return (error);
 }
@@ -177,27 +191,22 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 
 /*TODO: Check user permission to read file */
 static int
-inotify_add_watch(struct inotify_handle *ih, const char *pathname, uint32_t mask, int *res)
+inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen, uint32_t mask, int *res)
 {
 	struct thread *td = curthread;
 	struct ucred *cred = td->td_ucred;
 	struct file *fp, *nfp;
 	struct inotify_watch *iw, *siw;
-	int pathlen, wd = -1, error;
+	int wd = -1, error;
 
 	struct stat st;
 	struct dirent *direp;
 	int nfd, nwd, dblen;
 	uint32_t subpathlen;
 	struct nlookupdata nd;
-	char path[MAXPATHLEN], subpath[MAXPATHLEN], *dbuf;
+	char subpath[MAXPATHLEN], *dbuf;
 	u_int dcount = (sizeof(struct dirent) + (MAXNAMELEN+1)) * inotify_max_user_watches;
-
-	error = copyinstr(pathname, path, MAXPATHLEN, &pathlen);
-	if (error == 0 && pathlen <= 1) {
-		return (ENOENT);
-	}
-
+	
 	error = fp_open(path, O_RDONLY, 0400, &fp);
 	if (error != 0) {
 		kprintf("inotify_add_watch: Error opening file! \n");
@@ -322,7 +331,6 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 	}
 
 	inotify_find_watchwd(ih, 1);
-	inotify_find_watch(NULL, NULL);
 	return (error);
 }
 
@@ -373,12 +381,18 @@ inotify_find_watchwd(struct inotify_handle *ih, int wd)
 			return iw;
 	}
 	return NULL;
-
 }
 
+/*XXX: Index the list by pathname for faster lookup */
 static struct inotify_watch*
 inotify_find_watch(struct inotify_handle *ih, const char *path)
-{
+{	
+	struct inotify_watch *iw;
+
+	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
+		if (strcmp(iw->pathname, path) == 0)
+			return iw;
+	}
 	return NULL;
 }
 
