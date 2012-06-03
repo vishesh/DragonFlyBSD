@@ -48,6 +48,7 @@
 #include <sys/stat.h>
 #include <sys/systm.h>
 #include <sys/sysproto.h>
+#include <sys/vnode.h>
 
 /*XXX Where is this constant in headers? */
 #ifndef MAXNAMELEN
@@ -67,11 +68,10 @@ static int	inotify_read(struct file *fp, struct uio *uio,
 static int	inotify_close(struct file *fp);
 static int	inotify_stat(struct file *fp, struct stat *fb,
 			struct ucred *cred);
+static int	inotify_shutdown(struct file *fp, int how);
 
 static int	inotify_add_watch(struct inotify_handle *ih,
 			const char *path, uint32_t pathlen, uint32_t mask, int *res);
-static int	inotify_rm_watch(struct inotify_handle *ih,
-			struct inotify_watch *iw);
 static void	inotify_delete_watch(struct inotify_watch *iw);
 
 static int	inotify_fdalloc(struct filedesc *fdp, int want, int *result);
@@ -90,8 +90,15 @@ static struct fileops inotify_fops = {
 	.fo_kqfilter = badfo_kqfilter,
 	.fo_stat = inotify_stat,
 	.fo_close = inotify_close,
-	.fo_shutdown = badfo_shutdown
+	.fo_shutdown = inotify_shutdown
 };
+
+static int
+inotify_shutdown(struct file *fp, int how)
+{
+	kprintf("inotify shurdown called\n");
+	return 0;
+}
 
 /* TODO: Remove hardcoded constants for inotify_max_* */
 int
@@ -123,6 +130,7 @@ sys_inotify_init(struct inotify_init_args *args)
 	fp->f_flag = FREAD;
 	fp->f_type = DTYPE_INOTIFY;
 	fsetfd(td->td_proc->p_fd, fp, fd);
+	fdrop(fp);
 
 	ih->wfdp = fdinit(curthread->td_proc);
 
@@ -192,6 +200,7 @@ done:
 	(_iw)->parent = (_parent);					       \
 	(_iw)->pathname = kmalloc(_pathlen + 1, M_INOTIFY, M_WAITOK);	       \
 	(_iw)->pathlen = _pathlen;					       \
+	(_iw)->childs = -1;						       \
 	strcpy((_iw)->pathname, _path);					       \
 } while (0)
 
@@ -232,6 +241,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	fo_stat(fp, &st, cred);
 	if (st.st_mode & S_IFDIR) {
 		kprintf("inotify_add_watch: Got a directory to add.\n");
+		++iw->childs;
 
 		error = nlookup_init(&nd, path, UIO_SYSSPACE, 0);
 		if (error != 0) {
@@ -305,6 +315,8 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				fsetfd(ih->wfdp, nfp, nwd);
 				INOTIFY_WATCH_INIT(siw, nfp, nwd, mask, iw, subpath, subpathlen);
 				TAILQ_INSERT_TAIL(&ih->wlh, siw, watchlist);
+				++iw->childs;
+				fdrop(nfp);
 				kprintf("Adding => %s\n", direp->d_name);
 			}
 		}
@@ -313,6 +325,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 
 	fsetfd(ih->wfdp, fp, wd);
 	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
+	fdrop(fp);
 
 	*res = wd;
 	return (error);
@@ -321,23 +334,47 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 int
 sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 {
-	/* Nothing related to rm_watch. Just prototyping */
 	struct proc *proc = curthread->td_proc;
 	struct file *ifp;
 	struct inotify_handle *ih;
-	struct inotify_watch *iw;
-	int fd = args->fd;
-	int error = 0;
+	struct inotify_watch *iw, *iw2, *iw_temp;
+	int fd = args->fd, wd = args->wd;
+	int error = 0, res = -1;
 
 	ifp = proc->p_fd->fd_files[fd].fp;
-	ih = (struct inotify_handle*)ifp->f_data;
-
-	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
-		kprintf("Now iterated => %s \n", iw->pathname);
+	if (ifp->f_ops != &inotify_fops) {
+		args->sysmsg_iresult = -1;
+		/* TODO: see errno. */
+		return (EBADF);
 	}
 
-	inotify_find_watchwd(ih, 1);
-	inotify_rm_watch(0, 0);
+	ih = (struct inotify_handle*)ifp->f_data;
+	iw = inotify_find_watchwd(ih, wd);
+
+	if (iw == NULL) {
+		kprintf("inotify_rm_watch: INVAL wd passed\n");
+		error = EINVAL;
+		goto done;
+	}
+	
+	if (iw->childs > 0) {
+		TAILQ_FOREACH_MUTABLE(iw2, &ih->wlh, watchlist, iw_temp) {
+			if (iw2->parent == iw) {
+				TAILQ_REMOVE(&ih->wlh, iw2, watchlist);
+				inotify_delete_watch(iw2);
+				--iw->childs;
+			}
+
+			if (iw->childs == 0)
+				break;
+		}
+	}
+
+	TAILQ_REMOVE(&ih->wlh, iw, watchlist);
+	inotify_delete_watch(iw);
+
+done:
+	args->sysmsg_iresult = res;
 	return (error);
 }
 
@@ -349,44 +386,47 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	 * call copyin and copyout functions to walk through watch list
 	 * and prepare to call kevent
 	 */
+	kprintf("called inotify_read\n");
 	return 0;
 }
 
 static int
 inotify_close(struct file *fp)
 {	
-	struct proc *proc = curthread->td_proc;
+	/*struct proc *proc = curthread->td_proc;*/
 	struct inotify_handle *ih;
-	struct inotify_watch *iw;
+	struct inotify_watch *iw, *iw2;
 	struct filedesc *fdp;
 
-	kprintf("called close\n");
+	kprintf("called inotify close\n");
 	ih = (struct inotify_handle*)fp->f_data;
 	fdp = ih->wfdp;
 
-	while ( (iw = TAILQ_FIRST(&ih->wlh)) != NULL )
+	iw = TAILQ_FIRST(&ih->wlh);
+	while (iw != NULL) {
+		iw2 = TAILQ_NEXT(iw, watchlist);
 		inotify_delete_watch(iw);
+		iw = iw2;
+	}
 
-	/*if (fdp->fd_files != fdp->fd_builtin_files)*/
-		/*kfree(fdp->fd_files, M_INOTIFY); [>XXX: Should be M_FILEDESC <]*/
-	/*if (fdp->fd_cdir) {*/
-		/*cache_drop(&fdp->fd_ncdir);*/
-		/*vrele(fdp->fd_cdir);*/
-	/*}*/
-	/*if (fdp->fd_rdir) {*/
-		/*cache_drop(&fdp->fd_nrdir);*/
-		/*vrele(fdp->fd_rdir);*/
-	/*}*/
-	/*if (fdp->fd_jdir) {*/
-		/*cache_drop(&fdp->fd_njdir);*/
-		/*vrele(fdp->fd_jdir);*/
-	/*}*/
+	/*fdfree(proc, fdp);*/
 
-	/*kfree(fdp, M_INOTIFY); [>XXX: Should be M_FILEDESC <]*/
+	if (fdp->fd_files != fdp->fd_builtin_files)
+		kfree(fdp->fd_files, M_INOTIFY);
+	if (fdp->fd_cdir) {
+		cache_drop(&fdp->fd_ncdir);
+		vrele(fdp->fd_cdir);
+	}
+	if (fdp->fd_rdir) {
+		cache_drop(&fdp->fd_nrdir);
+		vrele(fdp->fd_rdir);
+	}
+	if (fdp->fd_jdir) {
+		cache_drop(&fdp->fd_njdir);
+		vrele(fdp->fd_jdir);
+	}
+	kfree(fdp, M_INOTIFY);
 
-	fdrop(ih->fp);
-	fdfree(proc, fdp);
-	kfree(iw, M_INOTIFY);
 	kfree(ih, M_INOTIFY);
 
 	return 0;
@@ -399,17 +439,11 @@ inotify_delete_watch(struct inotify_watch *iw)
 	kprintf("deleting %s\n", iw->pathname);
 	fp_close(iw->fp);
 	kfree(iw->pathname, M_INOTIFY);
-	TAILQ_REMOVE(&iw->handle->wlh, iw, watchlist);
+	kfree(iw, M_INOTIFY);
 }
 
 static int
 inotify_stat(struct file *fp, struct stat *fb, struct ucred *cred)
-{
-	return 0;
-}
-
-static int
-inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 {
 	return 0;
 }

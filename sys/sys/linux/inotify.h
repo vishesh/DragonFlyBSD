@@ -133,6 +133,7 @@ struct inotify_watch {
 	struct file	*fp;
 	uint32_t	 pathlen;
 	char		*pathname;
+	int		 childs;
 	struct inotify_handle *handle;
 	struct inotify_watch  *parent;
 	TAILQ_ENTRY(inotify_watch) watchlist;
