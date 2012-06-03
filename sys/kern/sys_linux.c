@@ -85,8 +85,12 @@ static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih,
 /*TODO: Any other operations? fcntl? */
 static struct fileops inotify_fops = {
 	.fo_read = inotify_read,
+	.fo_write = badfo_readwrite,
+	.fo_ioctl = badfo_ioctl,
+	.fo_kqfilter = badfo_kqfilter,
+	.fo_stat = inotify_stat,
 	.fo_close = inotify_close,
-	.fo_stat = inotify_stat
+	.fo_shutdown = badfo_shutdown
 };
 
 /* TODO: Remove hardcoded constants for inotify_max_* */
@@ -116,7 +120,8 @@ sys_inotify_init(struct inotify_init_args *args)
 
 	fp->f_data = ih;
 	fp->f_ops = &inotify_fops;
-	fp->f_flag = O_RDONLY;
+	fp->f_flag = FREAD;
+	fp->f_type = DTYPE_INOTIFY;
 	fsetfd(td->td_proc->p_fd, fp, fd);
 
 	ih->wfdp = fdinit(curthread->td_proc);
