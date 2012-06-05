@@ -66,13 +66,14 @@ static const int inotify_max_queued_events = 16384;
 static int	inotify_read(struct file *fp, struct uio *uio,
 			struct ucred *cred, int flags);
 static int	inotify_close(struct file *fp);
-static int	inotify_stat(struct file *fp, struct stat *fb,
+static int	inotify_stat(struct file *fp, struct stat *st,
 			struct ucred *cred);
 static int	inotify_shutdown(struct file *fp, int how);
 
 static int	inotify_add_watch(struct inotify_handle *ih,
 			const char *path, uint32_t pathlen, uint32_t mask, int *res);
 static void	inotify_delete_watch(struct inotify_watch *iw);
+static void	inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw);
 
 static int	inotify_fdalloc(struct filedesc *fdp, int want, int *result);
 static void	fdgrow_locked(struct filedesc *fdp, int want);
@@ -82,7 +83,6 @@ static struct inotify_watch*	inotify_find_watchwd(struct inotify_handle *ih, int
 static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih, 
 							const char *path);
 
-/*TODO: Any other operations? fcntl? */
 static struct fileops inotify_fops = {
 	.fo_read = inotify_read,
 	.fo_write = badfo_readwrite,
@@ -101,24 +101,28 @@ inotify_shutdown(struct file *fp, int how)
 }
 
 /* TODO: Remove hardcoded constants for inotify_max_* */
+/* TODO: Check user limits, EMFILE */
 int
 sys_inotify_init(struct inotify_init_args *args)
 {
 	struct thread *td = curthread;
 	struct inotify_handle *ih;
 	struct file *fp;	
-	int fd;
+	int fd = -1;
 	int error;
+
+	ih = kmalloc(sizeof(struct inotify_handle), M_INOTIFY, M_WAITOK);
+	if (ih == NULL) {
+		error = ENOMEM;
+		goto done;
+	}
 
 	error = falloc(td->td_lwp, &fp, &fd);
 	if (error != 0) {
 		kprintf("inotify_init: Error creating file structure for inotify!\n");
-		args->sysmsg_iresult = -1;
-		/* TODO: See errorno */
-		return (error);
+		goto done;
 	}
 
-	ih = kmalloc(sizeof(struct inotify_handle), M_INOTIFY, M_WAITOK);
 	TAILQ_INIT(&ih->wlh);
 	ih->fp = fp;
 	ih->event_count = 0;
@@ -134,6 +138,7 @@ sys_inotify_init(struct inotify_init_args *args)
 
 	ih->wfdp = fdinit(curthread->td_proc);
 
+done:
 	args->sysmsg_iresult = fd;
 	return (error);
 }
@@ -161,7 +166,6 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 
 	if (fp->f_ops != &inotify_fops) {
 		args->sysmsg_iresult = -1;
-		/* TODO: see errno. */
 		return (EBADF);
 	}
 
@@ -172,7 +176,6 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 
 	iht = inotify_find_watch(ih, path);
 	if (iht != NULL) {
-		kprintf("updating watch\n");
 		iht->mask = args->mask;
 		res = iht->wd;
 		error = 0;
@@ -182,9 +185,7 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	error = inotify_add_watch(ih, path, pathlen, args->mask, &res);
 	if (error != 0) {
 		kprintf("inotify_add_watch syscall: Error adding watch!\n");
-		/* TODO: See errono */
-		args->sysmsg_iresult = -1;
-		return (error);
+		goto done;
 	}
 
 done:
@@ -192,17 +193,26 @@ done:
 	return (error);
 }
 
-#define INOTIFY_WATCH_INIT(_iw, _fp, _wd, _mask, _parent, _path, _pathlen) do {\
-	(_iw) = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);    \
-	(_iw)->fp = (_fp);						       \
-	(_iw)->mask = (_mask);						       \
-	(_iw)->wd = (_wd);						       \
-	(_iw)->parent = (_parent);					       \
-	(_iw)->pathname = kmalloc(_pathlen + 1, M_INOTIFY, M_WAITOK);	       \
-	(_iw)->pathlen = _pathlen;					       \
-	(_iw)->childs = -1;						       \
-	strcpy((_iw)->pathname, _path);					       \
-} while (0)
+static __inline int
+INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd, uint32_t _mask, 
+		struct inotify_watch *_parent, const char *_path, uint32_t _pathlen)
+{
+	struct inotify_watch *iw = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);
+	if (iw == NULL)
+		return ENOMEM;
+
+	iw->fp = _fp;
+	iw->mask = _mask;
+	iw->wd = _wd;
+	iw->parent = _parent;
+	iw->pathname = kmalloc(_pathlen + 1, M_INOTIFY, M_WAITOK);
+	iw->pathlen = _pathlen;
+	iw->childs = -1;
+	strcpy(iw->pathname, _path);
+
+	*_iw = iw;
+	return 0;
+}
 
 /*TODO: Check user permission to read file */
 static int
@@ -211,7 +221,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	struct thread *td = curthread;
 	struct ucred *cred = td->td_ucred;
 	struct file *fp, *nfp;
-	struct inotify_watch *iw, *siw;
+	struct inotify_watch *iw = NULL, *siw = NULL;
 	int wd = -1, error;
 
 	struct stat st;
@@ -231,11 +241,12 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	error = inotify_fdalloc(ih->wfdp, 1, &wd);
 	if (error != 0) {
 		fp_close(fp);
-		fsetfd(ih->wfdp, NULL, wd);
 		return (error);
 	}
 
-	INOTIFY_WATCH_INIT(iw, fp, wd, mask, NULL, path, pathlen);
+	error = INOTIFY_WATCH_INIT(&iw, fp, wd, mask, NULL, path, pathlen);
+	if (error != 0)
+		goto early_error;
 
 	/* Now check if its a directory and get the entries */
 	fo_stat(fp, &st, cred);
@@ -244,18 +255,13 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		++iw->childs;
 
 		error = nlookup_init(&nd, path, UIO_SYSSPACE, 0);
-		if (error != 0) {
-			fp_close(fp);
-			kfree(iw, M_INOTIFY);
-			return (error);
-		}
+		if (error != 0)
+			goto error_and_cleanup;
+
 		error = kern_open(&nd, O_RDONLY, 0400, &nfd);
 		nlookup_done(&nd);
-		if (error != 0) {
-			fp_close(fp);
-			kfree(iw, M_INOTIFY);
-			return (error);
-		}
+		if (error != 0)
+			goto error_and_cleanup;
 
 		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK); 
 		/* XXX: make this read after basep, to work with large dirs
@@ -264,11 +270,8 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		error = kern_getdirentries(nfd, dbuf, dcount, NULL, &dblen, UIO_SYSSPACE);
 		if (error != 0) {
 			kprintf("inotify_add_watch: error retrieving directories\n");
-			fp_close(fp);
-			kfree(iw, M_INOTIFY);
-			kfree(dbuf, M_INOTIFY);
 			kern_close(nfd);
-			return (error);
+			goto error_and_cleanup;
 		}
 		kern_close(nfd);
 
@@ -294,7 +297,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 			error = fp_open(subpath, O_RDONLY, 0400, &nfp);
 			if (error != 0) {
 				kprintf("inotify_add_watch: Error opening file! \n");
-				return (error);
+				goto in_scan_error;
 			}
 
 			fo_stat(nfp, &st, cred);
@@ -303,17 +306,14 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				continue;
 			} else {
 				error = inotify_fdalloc(ih->wfdp, 1, &nwd);
-				if (error != 0) {
-					fp_close(nfp);
-					fp_close(fp);
-					kfree(iw, M_INOTIFY);
-					kfree(dbuf, M_INOTIFY);
-					fsetfd(ih->wfdp, NULL, nwd);
-					fsetfd(ih->wfdp, NULL, wd);
-					return (error);
-				}
+				if (error != 0)
+					goto late_in_scan_error;
+
 				fsetfd(ih->wfdp, nfp, nwd);
-				INOTIFY_WATCH_INIT(siw, nfp, nwd, mask, iw, subpath, subpathlen);
+				error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, subpath, subpathlen);
+				if (error != 0)
+					goto late_in_scan_error;
+
 				TAILQ_INSERT_TAIL(&ih->wlh, siw, watchlist);
 				++iw->childs;
 				fdrop(nfp);
@@ -329,6 +329,24 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 
 	*res = wd;
 	return (error);
+
+late_in_scan_error:
+	fp_close(nfp);
+	fsetfd(ih->wfdp, NULL, nwd);
+
+in_scan_error:
+	kfree(dbuf, M_INOTIFY);
+	inotify_rm_watch(ih, iw);
+
+error_and_cleanup:
+	kfree(iw->pathname, M_INOTIFY);
+	kfree(iw, M_INOTIFY);
+
+early_error:
+	fp_close(fp);
+	fsetfd(ih->wfdp, NULL, wd);
+	*res = -1;
+	return (error);
 }
 
 int
@@ -337,15 +355,14 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 	struct proc *proc = curthread->td_proc;
 	struct file *ifp;
 	struct inotify_handle *ih;
-	struct inotify_watch *iw, *iw2, *iw_temp;
+	struct inotify_watch *iw;
 	int fd = args->fd, wd = args->wd;
 	int error = 0, res = -1;
 
 	ifp = proc->p_fd->fd_files[fd].fp;
 	if (ifp->f_ops != &inotify_fops) {
-		args->sysmsg_iresult = -1;
-		/* TODO: see errno. */
-		return (EBADF);
+		error = EBADF;
+		goto done;
 	}
 
 	ih = (struct inotify_handle*)ifp->f_data;
@@ -357,11 +374,27 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 		goto done;
 	}
 	
+	inotify_rm_watch(ih, iw);
+	res = 0;
+
+done:
+	args->sysmsg_iresult = res;
+	return (error);
+}
+
+static void
+inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
+{
+	struct inotify_watch *w1, *wtemp;
+
 	if (iw->childs > 0) {
-		TAILQ_FOREACH_MUTABLE(iw2, &ih->wlh, watchlist, iw_temp) {
-			if (iw2->parent == iw) {
-				TAILQ_REMOVE(&ih->wlh, iw2, watchlist);
-				inotify_delete_watch(iw2);
+		TAILQ_FOREACH_MUTABLE(w1, &ih->wlh, watchlist, wtemp) {
+			if (w1->parent == iw) {
+				TAILQ_REMOVE(&ih->wlh, w1, watchlist);
+				/*spin_lock(&ih->wfdp->fd_spin);*/
+				/*funset_locked(ih->wfdp, w1->wd)*/
+				/*spin_unlock(&ih->wfdp->fd_spin);*/
+				inotify_delete_watch(w1);
 				--iw->childs;
 			}
 
@@ -371,13 +404,11 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 	}
 
 	TAILQ_REMOVE(&ih->wlh, iw, watchlist);
+	/*spin_lock(&ih->wfdp->fd_spin);*/
+	/*funset_locked(ih->wfdp, iw->wd)*/
+	/*spin_unlock(&ih->wfdp->fd_spin);*/
 	inotify_delete_watch(iw);
-
-done:
-	args->sysmsg_iresult = res;
-	return (error);
 }
-
 
 static int
 inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
@@ -388,6 +419,15 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	 */
 	kprintf("called inotify_read\n");
 	return 0;
+}
+
+static void
+inotify_delete_watch(struct inotify_watch *iw)
+{
+	kprintf("deleting %s\n", iw->pathname);
+	fp_close(iw->fp);
+	kfree(iw->pathname, M_INOTIFY);
+	kfree(iw, M_INOTIFY);
 }
 
 static int
@@ -409,8 +449,6 @@ inotify_close(struct file *fp)
 		iw = iw2;
 	}
 
-	/*fdfree(proc, fdp);*/
-
 	if (fdp->fd_files != fdp->fd_builtin_files)
 		kfree(fdp->fd_files, M_INOTIFY);
 	if (fdp->fd_cdir) {
@@ -426,25 +464,16 @@ inotify_close(struct file *fp)
 		vrele(fdp->fd_jdir);
 	}
 	kfree(fdp, M_INOTIFY);
-
 	kfree(ih, M_INOTIFY);
 
 	return 0;
 }
 
-
-static void
-inotify_delete_watch(struct inotify_watch *iw)
-{
-	kprintf("deleting %s\n", iw->pathname);
-	fp_close(iw->fp);
-	kfree(iw->pathname, M_INOTIFY);
-	kfree(iw, M_INOTIFY);
-}
-
 static int
-inotify_stat(struct file *fp, struct stat *fb, struct ucred *cred)
+inotify_stat(struct file *fp, struct stat *st, struct ucred *cred)
 {
+	/*struct inotify_handle *ih = (struct inotify_handle *)fp->f_data;*/
+	bzero((void *)st, sizeof(*st));
 	return 0;
 }
 
