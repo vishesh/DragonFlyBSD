@@ -63,17 +63,18 @@ static const int inotify_max_user_instances = 128;
 static const int inotify_max_user_watches = 8192;
 static const int inotify_max_queued_events = 16384;
 
+static int	inotify_init(int flags, int *result);
+static int	inotify_add_watch(struct inotify_handle *ih,
+			const char *path, uint32_t pathlen, uint32_t mask, int *res);
+static void	inotify_delete_watch(struct inotify_watch *iw);
+static void	inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw);
+
 static int	inotify_read(struct file *fp, struct uio *uio,
 			struct ucred *cred, int flags);
 static int	inotify_close(struct file *fp);
 static int	inotify_stat(struct file *fp, struct stat *st,
 			struct ucred *cred);
 static int	inotify_shutdown(struct file *fp, int how);
-
-static int	inotify_add_watch(struct inotify_handle *ih,
-			const char *path, uint32_t pathlen, uint32_t mask, int *res);
-static void	inotify_delete_watch(struct inotify_watch *iw);
-static void	inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw);
 
 static int	inotify_fdalloc(struct filedesc *fdp, int want, int *result);
 static void	fdgrow_locked(struct filedesc *fdp, int want);
@@ -96,20 +97,39 @@ static struct fileops inotify_fops = {
 static int
 inotify_shutdown(struct file *fp, int how)
 {
-	kprintf("inotify shurdown called\n");
+	kprintf("inotify shutdown called\n");
 	return 0;
 }
 
 /* TODO: Remove hardcoded constants for inotify_max_* */
-/* TODO: Check user limits, EMFILE */
 int
 sys_inotify_init(struct inotify_init_args *args)
 {
+	int error;
+	error = inotify_init(0, &args->sysmsg_iresult);
+	return (error);
+}
+
+int
+sys_inotify_init1(struct inotify_init1_args *args)
+{
+	int error;
+	error = inotify_init(args->flags, &args->sysmsg_iresult);
+	return (error);
+}
+
+/* TODO: Check user limits, EMFILE */
+static int
+inotify_init(int flags, int *result)
+{	
 	struct thread *td = curthread;
 	struct inotify_handle *ih;
 	struct file *fp;	
 	int fd = -1;
 	int error;
+
+	if (flags & ~(IN_CLOEXEC | IN_NONBLOCK))
+		return (EINVAL);
 
 	ih = kmalloc(sizeof(struct inotify_handle), M_INOTIFY, M_WAITOK);
 	if (ih == NULL) {
@@ -139,15 +159,8 @@ sys_inotify_init(struct inotify_init_args *args)
 	ih->wfdp = fdinit(curthread->td_proc);
 
 done:
-	args->sysmsg_iresult = fd;
+	*result = fd;
 	return (error);
-}
-
-int
-sys_inotify_init1(struct inotify_init1_args *args)
-{
-	kprintf("syscall => inotify_init1\n");
-	return 0;
 }
 
 int

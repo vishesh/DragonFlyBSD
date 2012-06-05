@@ -40,6 +40,7 @@
 #ifndef _DF_BSD_INOTIFY_H
 #define _DF_BSD_INOTIFY_H
 
+#include <sys/fcntl.h>
 #include <sys/filedesc.h>
 #include <sys/stdint.h>
 #include <sys/types.h>
@@ -51,6 +52,9 @@ struct inotify_event {
 	uint32_t	len;
 	char		name[0];
 };
+
+#define IN_CLOEXEC  FD_CLOEXEC
+#define IN_NONBLOCK O_NONBLOCK
 
 enum INOTIFY_FLAGS {
 	IN_ACCESS	    =	0x00000001,
