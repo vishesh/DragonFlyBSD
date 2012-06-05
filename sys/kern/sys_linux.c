@@ -391,9 +391,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 		TAILQ_FOREACH_MUTABLE(w1, &ih->wlh, watchlist, wtemp) {
 			if (w1->parent == iw) {
 				TAILQ_REMOVE(&ih->wlh, w1, watchlist);
-				/*spin_lock(&ih->wfdp->fd_spin);*/
-				/*funset_locked(ih->wfdp, w1->wd)*/
-				/*spin_unlock(&ih->wfdp->fd_spin);*/
+				funsetfd(ih->wfdp, w1->wd);
 				inotify_delete_watch(w1);
 				--iw->childs;
 			}
@@ -404,9 +402,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	}
 
 	TAILQ_REMOVE(&ih->wlh, iw, watchlist);
-	/*spin_lock(&ih->wfdp->fd_spin);*/
-	/*funset_locked(ih->wfdp, iw->wd)*/
-	/*spin_unlock(&ih->wfdp->fd_spin);*/
+	funsetfd(ih->wfdp, iw->wd);
 	inotify_delete_watch(iw);
 }
 
