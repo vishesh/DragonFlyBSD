@@ -90,7 +90,6 @@ static struct fileops inotify_fops = {
 	.fo_shutdown = inotify_shutdown
 };
 
-/* TODO: Global limits. Integrate with sysctl */
 static const uint inotify_max_user_instances_default = 128;
 static const uint inotify_max_user_watches_default = 8192;
 static const uint inotify_max_queued_events_default = 16384;
@@ -132,7 +131,6 @@ inotify_sysinit(void *args)
 SYSINIT(inotify, SI_SUB_HELPER_THREADS, SI_ORDER_ANY, inotify_sysinit, NULL);
 
 
-/* TODO: Remove hardcoded constants for inotify_max_* */
 int
 sys_inotify_init(struct inotify_init_args *args)
 {
@@ -481,7 +479,6 @@ inotify_shutdown(struct file *fp, int how)
 static int
 inotify_close(struct file *fp)
 {	
-	/*struct proc *proc = curthread->td_proc;*/
 	struct inotify_handle *ih;
 	struct inotify_watch *iw, *iw2;
 	struct filedesc *fdp;
@@ -552,7 +549,6 @@ inotify_find_watch(struct inotify_handle *ih, const char *path)
 
 /* NOTE: Following are  Copied from fdalloc and modified */
 
-/* TODO: Set limits as per handle or desc initialized? */
 /*
  * Grow the file table so it can hold through descriptor (want).
  *
