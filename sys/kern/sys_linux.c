@@ -99,20 +99,36 @@ static uint inotify_max_user_instances;
 static uint inotify_max_user_watches;
 static uint inotify_max_queued_events;
 
-SYSCTL_UINT(_kern, OID_AUTO, inotify_max_user_watches, CTLFLAG_RW,
-		&inotify_max_user_watches, 0, "inotify maximum user watches limit");
-SYSCTL_UINT(_kern, OID_AUTO, inotify_max_user_instances, CTLFLAG_RW,
-		&inotify_max_user_instances, 0, "inotify maximum user instances limit");
-SYSCTL_UINT(_kern, OID_AUTO, inotify_max_queued_events, CTLFLAG_RW,
-		&inotify_max_queued_events, 0, "inotify maximum  queued events limit");
-
 static void
 inotify_sysinit(void *args)
 {
+	static struct sysctl_oid *root;
+	static struct sysctl_ctx_list clist;
+
 	inotify_max_user_instances = inotify_max_user_instances_default;
 	inotify_max_user_watches = inotify_max_user_watches_default;
 	inotify_max_queued_events = inotify_max_queued_events_default;
+
+	/* create the table */
+	sysctl_ctx_init(&clist);
+	root = SYSCTL_ADD_NODE(&clist, SYSCTL_STATIC_CHILDREN(_kern),
+			OID_AUTO, "inotify", CTLFLAG_RW, 0, "inotify settings root node");
+	if(root == NULL) {
+		kprintf("SYSCTL_ADD_NODE failed!\n");
+		return ;
+	}
+
+	SYSCTL_ADD_UINT(&clist, SYSCTL_CHILDREN(root), OID_AUTO, "max_user_watches",
+			CTLFLAG_RW, &inotify_max_user_watches, 0,
+			"inotify maximum user watches limit");
+	SYSCTL_ADD_UINT(&clist, SYSCTL_CHILDREN(root), OID_AUTO, "max_user_instances",
+			CTLFLAG_RW, &inotify_max_user_instances, 0,
+			"inotify maximum user instance limit");
+	SYSCTL_ADD_UINT(&clist, SYSCTL_CHILDREN(root), OID_AUTO, "max_queued_events",
+			CTLFLAG_RW, &inotify_max_queued_events, 0,
+			"inotify maximum queued events");
 }
+
 SYSINIT(inotify, SI_SUB_HELPER_THREADS, SI_ORDER_ANY, inotify_sysinit, NULL);
 
 
