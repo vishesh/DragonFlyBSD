@@ -41,11 +41,13 @@
 #include <sys/kernel.h>
 #include <sys/libkern.h>
 #include <sys/malloc.h>
+#include <sys/module.h>
 #include <sys/nlookup.h>
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/spinlock2.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/sysproto.h>
 #include <sys/vnode.h>
@@ -57,11 +59,6 @@
 
 MALLOC_DECLARE(M_INOTIFY);
 MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
-
-/* TODO: Global limits. Integrate with sysctl */
-static const int inotify_max_user_instances = 128;
-static const int inotify_max_user_watches = 8192;
-static const int inotify_max_queued_events = 16384;
 
 static int	inotify_init(int flags, int *result);
 static int	inotify_add_watch(struct inotify_handle *ih,
@@ -94,12 +91,59 @@ static struct fileops inotify_fops = {
 	.fo_shutdown = inotify_shutdown
 };
 
-static int
-inotify_shutdown(struct file *fp, int how)
-{
-	kprintf("inotify shutdown called\n");
-	return 0;
-}
+static const uint inotify_max_user_instances = 128;
+static const uint inotify_max_user_watches = 8192;
+static const uint inotify_max_queued_events = 16384;
+
+/* TODO: Global limits. Integrate with sysctl */
+/*
+ *static const uint inotify_max_user_instances_default = 128;
+ *static const uint inotify_max_user_watches_default = 8192;
+ *static const uint inotify_max_queued_events_default = 16384;
+ *
+ *static uint inotify_max_user_instances;
+ *static uint inotify_max_user_watches;
+ *static uint inotify_max_queued_events;
+ *
+ *SYSCTL_UINT(_kern, OID_AUTO, inotify_max_user_watches, CTLFLAG_RW,
+ *                &inotify_max_user_watches, 0, "inotify maximum user watches limit");
+ *SYSCTL_UINT(_kern, OID_AUTO, inotify_max_user_instances, CTLFLAG_RW,
+ *                &inotify_max_user_instances, 0, "inotify maximum user instances limit");
+ *SYSCTL_UINT(_kern, OID_AUTO, inotify_max_queued_events, CTLFLAG_RW,
+ *                &inotify_max_queued_events, 0, "inotify maximum  queued events limit");
+ *
+ *static int
+ *inotify_module_load(module_t mod, int cmd, void *arg)
+ *{
+ *        int error = 0;
+ *
+ *        switch (cmd) {
+ *        case MOD_LOAD:
+ *                kprintf("inotify: module loaded\n");
+ *                [>sysctl_register_oid(&sysctl__kern_inotify_max_user_watches);<]
+ *                [>sysctl_register_oid(&sysctl__kern_inotify_max_user_instances);<]
+ *                [>sysctl_register_oid(&sysctl__kern_inotify_max_queued_events);<]
+ *                break;
+ *        case MOD_UNLOAD:
+ *                [>sysctl_unregister_oid(&sysctl__kern_inotify_max_user_watches);<]
+ *                [>sysctl_unregister_oid(&sysctl__kern_inotify_max_user_instances);<]
+ *                [>sysctl_unregister_oid(&sysctl__kern_inotify_max_queued_events);<]
+ *                break;
+ *        default:
+ *                error = EINVAL;
+ *                break;
+ *        }
+ *        return error;
+ *}
+ *
+ *static moduledata_t inotify_moddata= {
+ *        "inotify_module",
+ *        inotify_module_load,
+ *        0
+ *};
+ */
+
+DECLARE_MODULE(inotify_module, inotify_moddata, SI_SUB_EXEC, SI_ORDER_ANY);
 
 /* TODO: Remove hardcoded constants for inotify_max_* */
 int
@@ -119,6 +163,7 @@ sys_inotify_init1(struct inotify_init1_args *args)
 }
 
 /* TODO: Check user limits, EMFILE */
+/* TODO: Set appropriate flags */
 static int
 inotify_init(int flags, int *result)
 {	
@@ -437,6 +482,13 @@ inotify_delete_watch(struct inotify_watch *iw)
 	fp_close(iw->fp);
 	kfree(iw->pathname, M_INOTIFY);
 	kfree(iw, M_INOTIFY);
+}
+
+static int
+inotify_shutdown(struct file *fp, int how)
+{
+	kprintf("inotify shutdown called\n");
+	return 0;
 }
 
 static int
