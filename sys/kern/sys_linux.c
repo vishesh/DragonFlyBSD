@@ -41,7 +41,6 @@
 #include <sys/kernel.h>
 #include <sys/libkern.h>
 #include <sys/malloc.h>
-#include <sys/module.h>
 #include <sys/nlookup.h>
 #include <sys/param.h>
 #include <sys/queue.h>
@@ -91,59 +90,31 @@ static struct fileops inotify_fops = {
 	.fo_shutdown = inotify_shutdown
 };
 
-static const uint inotify_max_user_instances = 128;
-static const uint inotify_max_user_watches = 8192;
-static const uint inotify_max_queued_events = 16384;
-
 /* TODO: Global limits. Integrate with sysctl */
-/*
- *static const uint inotify_max_user_instances_default = 128;
- *static const uint inotify_max_user_watches_default = 8192;
- *static const uint inotify_max_queued_events_default = 16384;
- *
- *static uint inotify_max_user_instances;
- *static uint inotify_max_user_watches;
- *static uint inotify_max_queued_events;
- *
- *SYSCTL_UINT(_kern, OID_AUTO, inotify_max_user_watches, CTLFLAG_RW,
- *                &inotify_max_user_watches, 0, "inotify maximum user watches limit");
- *SYSCTL_UINT(_kern, OID_AUTO, inotify_max_user_instances, CTLFLAG_RW,
- *                &inotify_max_user_instances, 0, "inotify maximum user instances limit");
- *SYSCTL_UINT(_kern, OID_AUTO, inotify_max_queued_events, CTLFLAG_RW,
- *                &inotify_max_queued_events, 0, "inotify maximum  queued events limit");
- *
- *static int
- *inotify_module_load(module_t mod, int cmd, void *arg)
- *{
- *        int error = 0;
- *
- *        switch (cmd) {
- *        case MOD_LOAD:
- *                kprintf("inotify: module loaded\n");
- *                [>sysctl_register_oid(&sysctl__kern_inotify_max_user_watches);<]
- *                [>sysctl_register_oid(&sysctl__kern_inotify_max_user_instances);<]
- *                [>sysctl_register_oid(&sysctl__kern_inotify_max_queued_events);<]
- *                break;
- *        case MOD_UNLOAD:
- *                [>sysctl_unregister_oid(&sysctl__kern_inotify_max_user_watches);<]
- *                [>sysctl_unregister_oid(&sysctl__kern_inotify_max_user_instances);<]
- *                [>sysctl_unregister_oid(&sysctl__kern_inotify_max_queued_events);<]
- *                break;
- *        default:
- *                error = EINVAL;
- *                break;
- *        }
- *        return error;
- *}
- *
- *static moduledata_t inotify_moddata= {
- *        "inotify_module",
- *        inotify_module_load,
- *        0
- *};
- */
+static const uint inotify_max_user_instances_default = 128;
+static const uint inotify_max_user_watches_default = 8192;
+static const uint inotify_max_queued_events_default = 16384;
 
-DECLARE_MODULE(inotify_module, inotify_moddata, SI_SUB_EXEC, SI_ORDER_ANY);
+static uint inotify_max_user_instances;
+static uint inotify_max_user_watches;
+static uint inotify_max_queued_events;
+
+SYSCTL_UINT(_kern, OID_AUTO, inotify_max_user_watches, CTLFLAG_RW,
+		&inotify_max_user_watches, 0, "inotify maximum user watches limit");
+SYSCTL_UINT(_kern, OID_AUTO, inotify_max_user_instances, CTLFLAG_RW,
+		&inotify_max_user_instances, 0, "inotify maximum user instances limit");
+SYSCTL_UINT(_kern, OID_AUTO, inotify_max_queued_events, CTLFLAG_RW,
+		&inotify_max_queued_events, 0, "inotify maximum  queued events limit");
+
+static void
+inotify_sysinit(void *args)
+{
+	inotify_max_user_instances = inotify_max_user_instances_default;
+	inotify_max_user_watches = inotify_max_user_watches_default;
+	inotify_max_queued_events = inotify_max_queued_events_default;
+}
+SYSINIT(inotify, SI_SUB_HELPER_THREADS, SI_ORDER_ANY, inotify_sysinit, NULL);
+
 
 /* TODO: Remove hardcoded constants for inotify_max_* */
 int
