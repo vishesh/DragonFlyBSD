@@ -119,15 +119,24 @@ enum INOTIFY_FLAGS {
  *                         IN_MOVE_SELF)
  */
 
-/* Kernel API */ 
+/* Kernel API */
 #ifdef _KERNEL
 
+struct inotify_ucount {
+	uid_t	ic_uid;	
+	uint	ic_watches;
+	uint	ic_instances;
+	SLIST_ENTRY(inotify_ucount) ic_entry;
+};
+
 struct inotify_handle {
-	struct file	*fp;
-	unsigned int	 event_count;
-	unsigned int	 max_events;
-	unsigned int	 queue_size;
-	struct filedesc	*wfdp;
+	struct file	    *fp;
+	unsigned int	     event_count;
+	unsigned int	     max_events;
+	unsigned int	     queue_size;
+	unsigned int	     nchilds;
+	struct filedesc	    *wfdp;
+	struct inotify_ucount *iuc;
 	TAILQ_HEAD(, inotify_watch) wlh;
 };
 

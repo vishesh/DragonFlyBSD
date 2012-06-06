@@ -80,6 +80,8 @@ static struct inotify_watch*	inotify_find_watchwd(struct inotify_handle *ih, int
 static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih, 
 							const char *path);
 
+static struct inotify_ucount*	inotify_find_iuc(uid_t id);
+
 static struct fileops inotify_fops = {
 	.fo_read = inotify_read,
 	.fo_write = badfo_readwrite,
@@ -91,12 +93,14 @@ static struct fileops inotify_fops = {
 };
 
 static const uint inotify_max_user_instances_default = 128;
-static const uint inotify_max_user_watches_default = 8192;
+static const uint inotify_max_user_watches_default = 8192; /* we consider all watches */
 static const uint inotify_max_queued_events_default = 16384;
 
 static uint inotify_max_user_instances;
 static uint inotify_max_user_watches;
 static uint inotify_max_queued_events;
+
+SLIST_HEAD(, inotify_ucount) iuc_head = SLIST_HEAD_INITIALIZER(iuc_head);
 
 static void
 inotify_sysinit(void *args)
@@ -107,6 +111,8 @@ inotify_sysinit(void *args)
 	inotify_max_user_instances = inotify_max_user_instances_default;
 	inotify_max_user_watches = inotify_max_user_watches_default;
 	inotify_max_queued_events = inotify_max_queued_events_default;
+
+	SLIST_INIT(&iuc_head);
 
 	/* create the table */
 	sysctl_ctx_init(&clist);
@@ -131,6 +137,24 @@ inotify_sysinit(void *args)
 SYSINIT(inotify, SI_SUB_HELPER_THREADS, SI_ORDER_ANY, inotify_sysinit, NULL);
 
 
+static struct inotify_ucount*
+inotify_find_iuc(uid_t id)
+{
+	struct inotify_ucount *iuc;
+	SLIST_FOREACH(iuc, &iuc_head, ic_entry) {
+		if (iuc->ic_uid == id)
+			return iuc;
+	}
+	
+	iuc = kmalloc(sizeof *iuc, M_INOTIFY, M_WAITOK);
+	iuc->ic_uid = id;
+	iuc->ic_watches = 0;
+	iuc->ic_instances = 0;
+
+	SLIST_INSERT_HEAD(&iuc_head, iuc, ic_entry);
+	return iuc;
+}
+
 int
 sys_inotify_init(struct inotify_init_args *args)
 {
@@ -147,16 +171,20 @@ sys_inotify_init1(struct inotify_init1_args *args)
 	return (error);
 }
 
-/* TODO: Check user limits, EMFILE */
 /* TODO: Set appropriate flags */
 static int
 inotify_init(int flags, int *result)
 {	
 	struct thread *td = curthread;
 	struct inotify_handle *ih;
+	struct inotify_ucount *iuc;
 	struct file *fp;	
 	int fd = -1;
 	int error;
+
+	iuc = inotify_find_iuc(td->td_ucred->cr_uid);
+	if (iuc->ic_instances >= inotify_max_user_instances)
+		return (EMFILE);
 
 	if (flags & ~(IN_CLOEXEC | IN_NONBLOCK))
 		return (EINVAL);
@@ -178,7 +206,10 @@ inotify_init(int flags, int *result)
 	ih->event_count = 0;
 	ih->queue_size = 0;
 	ih->max_events = inotify_max_queued_events; /*TODO: Make it work? */
+	ih->nchilds = 0;
+	ih->iuc = iuc;
 
+	++iuc->ic_instances;
 	fp->f_data = ih;
 	fp->f_ops = &inotify_fops;
 	fp->f_flag = FREAD;
@@ -200,12 +231,18 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	struct file *fp;
 	struct inotify_handle *ih;
 	struct inotify_watch *iht;
+	struct inotify_ucount *iuc;
 	char path[MAXPATHLEN];
 	int fd = args->fd, error, res = -1;
 	uint32_t pathlen;
 
 	fp = proc->p_fd->fd_files[fd].fp;
 	ih = (struct inotify_handle*)fp->f_data;
+	iuc = ih->iuc;
+
+	if (iuc->ic_watches >= inotify_max_user_watches)
+		return (ENOSPC);
+
 
 	if (fp->f_ops != &inotify_fops) {
 		args->sysmsg_iresult = -1;
@@ -264,6 +301,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	struct thread *td = curthread;
 	struct ucred *cred = td->td_ucred;
 	struct file *fp, *nfp;
+	struct inotify_ucount *iuc = ih->iuc;
 	struct inotify_watch *iw = NULL, *siw = NULL;
 	int wd = -1, error;
 
@@ -291,6 +329,11 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	if (error != 0)
 		goto early_error;
 
+	++iuc->ic_watches;
+	++ih->nchilds;
+
+	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
+
 	/* Now check if its a directory and get the entries */
 	fo_stat(fp, &st, cred);
 	if (st.st_mode & S_IFDIR) {
@@ -314,7 +357,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		if (error != 0) {
 			kprintf("inotify_add_watch: error retrieving directories\n");
 			kern_close(nfd);
-			goto error_and_cleanup;
+			goto in_scan_error;
 		}
 		kern_close(nfd);
 
@@ -348,9 +391,14 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				fp_close(nfp);
 				continue;
 			} else {
+				if (iuc->ic_watches >= inotify_max_user_watches) {
+					error = ENOSPC;
+					goto iwfdp_in_scan_error;
+				}
+
 				error = inotify_fdalloc(ih->wfdp, 1, &nwd);
 				if (error != 0)
-					goto late_in_scan_error;
+					goto iwfdp_in_scan_error;
 
 				fsetfd(ih->wfdp, nfp, nwd);
 				error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, subpath, subpathlen);
@@ -359,6 +407,8 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 
 				TAILQ_INSERT_TAIL(&ih->wlh, siw, watchlist);
 				++iw->childs;
+				++ih->nchilds;
+				++iuc->ic_watches;
 				fdrop(nfp);
 				kprintf("Adding => %s\n", direp->d_name);
 			}
@@ -367,23 +417,23 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	}
 
 	fsetfd(ih->wfdp, fp, wd);
-	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
 	fdrop(fp);
-
 	*res = wd;
 	return (error);
 
 late_in_scan_error:
-	fp_close(nfp);
 	fsetfd(ih->wfdp, NULL, nwd);
+
+iwfdp_in_scan_error:
+	fp_close(nfp);
 
 in_scan_error:
 	kfree(dbuf, M_INOTIFY);
-	inotify_rm_watch(ih, iw);
 
 error_and_cleanup:
-	kfree(iw->pathname, M_INOTIFY);
-	kfree(iw, M_INOTIFY);
+	iuc->ic_watches -= iw->childs + 2;
+	ih->nchilds -= iw->childs + 2;
+	inotify_rm_watch(ih, iw);
 
 early_error:
 	fp_close(fp);
@@ -429,7 +479,10 @@ static void
 inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 {
 	struct inotify_watch *w1, *wtemp;
+	struct inotify_ucount *iuc = ih->iuc;
 
+	iuc->ic_watches -= iw->childs + 1;
+	ih->nchilds -= iw->childs + 1;
 	if (iw->childs > 0) {
 		TAILQ_FOREACH_MUTABLE(w1, &ih->wlh, watchlist, wtemp) {
 			if (w1->parent == iw) {
@@ -486,6 +539,8 @@ inotify_close(struct file *fp)
 	kprintf("called inotify close\n");
 	ih = (struct inotify_handle*)fp->f_data;
 	fdp = ih->wfdp;
+	--ih->iuc->ic_instances;
+	ih->iuc->ic_watches -= ih->nchilds;
 
 	iw = TAILQ_FIRST(&ih->wlh);
 	while (iw != NULL) {
