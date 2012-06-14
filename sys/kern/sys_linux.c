@@ -1,3 +1,4 @@
+
 /*
  * Copyright (c) 2012 The DragonFly Project.  All rights reserved.
  * 
@@ -51,10 +52,9 @@
 #include <sys/sysproto.h>
 #include <sys/vnode.h>
 
-/*XXX Where is this constant in headers? */
-#ifndef MAXNAMELEN
-#define MAXNAMELEN 255
-#endif
+/* TODO: Find and replace with inotify_flags */
+
+#define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
 
 MALLOC_DECLARE(M_INOTIFY);
 MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
@@ -77,10 +77,19 @@ static void	fdgrow_locked(struct filedesc *fdp, int want);
 static void	fdreserve_locked(struct filedesc *fdp, int fd, int incr);
 
 static struct inotify_watch*	inotify_find_watchwd(struct inotify_handle *ih, int wd);
-static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih, 
+static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih,
 							const char *path);
-
 static struct inotify_ucount*	inotify_find_iuc(uid_t id);
+
+static int	inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events);
+static int	inotify_copyout(void *arg, struct kevent *kevp, int count, int *res);
+static int	inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev);
+
+struct inotify_kevent_copyin_args {
+	struct inotify_handle *handle;
+	int count;
+	int error;
+};
 
 static struct fileops inotify_fops = {
 	.fo_read = inotify_read,
@@ -201,6 +210,7 @@ inotify_init(int flags, int *result)
 		goto done;
 	}
 
+	TAILQ_INIT(&ih->eventq);
 	TAILQ_INIT(&ih->wlh);
 	ih->fp = fp;
 	ih->event_count = 0;
@@ -218,6 +228,7 @@ inotify_init(int flags, int *result)
 	fdrop(fp);
 
 	ih->wfdp = fdinit(curthread->td_proc);
+	kqueue_init(&ih->kq, ih->wfdp);
 
 done:
 	*result = fd;
@@ -311,7 +322,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	uint32_t subpathlen;
 	struct nlookupdata nd;
 	char subpath[MAXPATHLEN], *dbuf;
-	u_int dcount = (sizeof(struct dirent) + (MAXNAMELEN+1)) * inotify_max_user_watches;
+	u_int dcount = (sizeof(struct dirent) + (MAXPATHLEN+1)) * inotify_max_user_watches;
 	
 	error = fp_open(path, O_RDONLY, 0400, &fp);
 	if (error != 0) {
@@ -326,6 +337,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	}
 
 	error = INOTIFY_WATCH_INIT(&iw, fp, wd, mask, NULL, path, pathlen);
+	/*kprintf("added name= %s, wd = %d\n", path, wd);*/
 	if (error != 0)
 		goto early_error;
 
@@ -349,7 +361,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		if (error != 0)
 			goto error_and_cleanup;
 
-		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK); 
+		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK);
 		/* XXX: make this read after basep, to work with large dirs
 		 * and limited buffer 
 		 */
@@ -367,7 +379,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				direp = _DIRENT_NEXT(direp)) {
 			if ((char *)_DIRENT_NEXT(direp) > dbuf + dblen)
 				break;
-			if (direp->d_namlen > MAXNAMELEN)
+			if (direp->d_namlen > MAXPATHLEN)
 				continue;
 
 			/* now check if given entry is again directory
@@ -410,7 +422,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				++ih->nchilds;
 				++iuc->ic_watches;
 				fdrop(nfp);
-				kprintf("Adding => %s\n", direp->d_name);
+				/*kprintf("Adding => %s, wd = %d\n", direp->d_name, siw->wd);*/
 			}
 		}
 		kfree(dbuf, M_INOTIFY);
@@ -466,6 +478,11 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 		error = EINVAL;
 		goto done;
 	}
+	else if (iw->parent != NULL) {
+		kprintf("inotify_rm_watch: INVAL wd passed. Not available for user.\n");
+		error = EINVAL;
+		goto done;
+	}
 	
 	inotify_rm_watch(ih, iw);
 	res = 0;
@@ -486,6 +503,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	if (iw->childs > 0) {
 		TAILQ_FOREACH_MUTABLE(w1, &ih->wlh, watchlist, wtemp) {
 			if (w1->parent == iw) {
+				knote_fdclose(w1->fp, ih->wfdp, w1->wd);
 				TAILQ_REMOVE(&ih->wlh, w1, watchlist);
 				funsetfd(ih->wfdp, w1->wd);
 				inotify_delete_watch(w1);
@@ -497,6 +515,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 		}
 	}
 
+	knote_fdclose(iw->fp, ih->wfdp, iw->wd);
 	TAILQ_REMOVE(&ih->wlh, iw, watchlist);
 	funsetfd(ih->wfdp, iw->wd);
 	inotify_delete_watch(iw);
@@ -505,18 +524,71 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 static int
 inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 {
-	/**
-	 * call copyin and copyout functions to walk through watch list
-	 * and prepare to call kevent
-	 */
-	kprintf("called inotify_read\n");
-	return 0;
+	struct inotify_kevent_copyin_args ika;
+	struct inotify_handle *ih;
+	struct inotify_watch *iw;
+	struct inotify_queue_entry *iqe, *iqe_temp;
+	struct inotify_event *ie;
+	int error, res = 0, nevents;
+	int eventlen;
+
+	ie = kmalloc(INOTIFY_EVENT_SIZE + MAXPATHLEN, M_INOTIFY, M_WAITOK);
+	ih = (struct inotify_handle*)fp->f_data;
+	nevents = inotify_max_queued_events - ih->queue_size;
+	ika.handle = ih;
+	ika.error = 0;
+	ika.count = 0;
+
+	if (ih == NULL)
+		return 0;
+
+	error = kern_kevent(&ih->kq, nevents, &res, &ika,
+				inotify_copyin, inotify_copyout, NULL);
+
+	if (error != 0)
+		return 0;
+
+	TAILQ_FOREACH_MUTABLE(iqe, &ih->eventq, entries, iqe_temp) {
+		iw = iqe->iw;
+
+		if (iw->parent == NULL) {
+			eventlen = INOTIFY_EVENT_SIZE;
+			ie->wd = iw->wd;
+			ie->mask = 0;
+			ie->len = 0;
+		}
+		else {
+			eventlen = INOTIFY_EVENT_SIZE + iw->pathlen;
+			ie->wd = iw->parent->wd;
+			ie->mask = IN_ISDIR;
+			ie->len = iw->pathlen;
+			strcpy(ie->name, iw->pathname);
+		}
+
+		if (uio->uio_resid < eventlen)
+			break;
+
+		ie->mask |= iqe->mask;
+		ie->cookie = 0;
+
+		error = uiomove((caddr_t)ie, eventlen, uio);
+		if (error > 0) {
+			kprintf("inotify_read: error while transferring\n");
+			break;
+		}
+		
+		TAILQ_REMOVE(&ih->eventq, iqe, entries);
+		--ih->queue_size;
+	}
+
+	kfree(ie, M_INOTIFY);
+	return (error);
 }
 
 static void
 inotify_delete_watch(struct inotify_watch *iw)
 {
-	kprintf("deleting %s\n", iw->pathname);
+	/*kprintf("deleting %s\n", iw->pathname);*/
 	fp_close(iw->fp);
 	kfree(iw->pathname, M_INOTIFY);
 	kfree(iw, M_INOTIFY);
@@ -534,17 +606,26 @@ inotify_close(struct file *fp)
 {	
 	struct inotify_handle *ih;
 	struct inotify_watch *iw, *iw2;
+	struct inotify_queue_entry *iqe, *iqe_next;
 	struct filedesc *fdp;
 
-	kprintf("called inotify close\n");
+	/*kprintf("called inotify close\n");*/
 	ih = (struct inotify_handle*)fp->f_data;
+
 	fdp = ih->wfdp;
 	--ih->iuc->ic_instances;
 	ih->iuc->ic_watches -= ih->nchilds;
 
+	iqe = TAILQ_FIRST(&ih->eventq);
+	TAILQ_FOREACH_MUTABLE(iqe, &ih->eventq, entries, iqe_next) {
+		TAILQ_REMOVE(&ih->eventq, iqe, entries);
+		kfree(iqe, M_INOTIFY);
+	}
+
 	iw = TAILQ_FIRST(&ih->wlh);
 	while (iw != NULL) {
 		iw2 = TAILQ_NEXT(iw, watchlist);
+		knote_fdclose(iw->fp, ih->wfdp, iw->wd);
 		inotify_delete_watch(iw);
 		iw = iw2;
 	}
@@ -563,6 +644,8 @@ inotify_close(struct file *fp)
 		cache_drop(&fdp->fd_njdir);
 		vrele(fdp->fd_jdir);
 	}
+
+	kqueue_terminate(&ih->kq);
 	kfree(fdp, M_INOTIFY);
 	kfree(ih, M_INOTIFY);
 
@@ -793,6 +876,131 @@ found:
 	fdp->fd_files[fd].reserved = 1;
 	fdreserve_locked(fdp, fd, 1);
 	spin_unlock(&fdp->fd_spin);
+	return (0);
+}
+
+static int
+inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
+{
+	u_int flags = EV_ADD | EV_ENABLE | EV_CLEAR;
+	u_int fflags = NOTE_REVOKE | NOTE_RENAME;
+	uint32_t mask = iw->mask;
+
+	if (mask & IN_OPEN)
+		fflags |= NOTE_OPEN;
+	if (mask & IN_ACCESS)
+		fflags |= NOTE_ACCESS;
+	if (mask & IN_CLOSE_WRITE && iw->fp->f_flag)
+		fflags |= NOTE_CLOSE;
+	if (mask & IN_CLOSE_NOWRITE)
+		fflags |= NOTE_CLOSE;
+	if (mask & IN_MODIFY)
+		fflags |= NOTE_WRITE;
+	if (mask & IN_CREATE)
+		fflags |= NOTE_CREATE;
+	if (mask & IN_ATTRIB)
+		fflags |= NOTE_ATTRIB;
+	if (mask & IN_MOVED_FROM)
+		fflags |= NOTE_WRITE;
+	if (mask & IN_MOVED_TO)
+		fflags |= NOTE_RENAME;
+	if (mask & IN_MOVE_SELF)
+		fflags |= NOTE_RENAME;
+	if (mask & IN_DELETE)
+		fflags |= NOTE_DELETE;
+	if (mask & IN_DELETE_SELF)
+		fflags |= NOTE_DELETE;
+
+	EV_SET(kev, iw->wd, EVFILT_VNODE, flags, fflags, 0, (void*)iw);
+	return (0);
+}
+
+static void
+inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
+{
+	uint32_t result;
+	u_int fflags = kev->fflags;
+
+	if (fflags & NOTE_OPEN)
+		result |= IN_OPEN;
+	if (fflags & NOTE_CLOSE_WRITE)
+		result |= IN_CLOSE_WRITE;
+	if (fflags & NOTE_CLOSE_NOWRITE)
+		result |= IN_CLOSE_NOWRITE;
+	if (fflags & NOTE_ACCESS)
+		result |= IN_ACCESS;
+	if (fflags & NOTE_WRITE) /* TODO: or check for dir */
+		result |= IN_MODIFY;
+	if (fflags & NOTE_ATTRIB)
+		result |= IN_ATTRIB;
+	if (fflags & NOTE_CREATE) /* TODO: in case of dir, check for new file */
+		result |= IN_CREATE;
+	if (fflags & NOTE_DELETE)
+		result |= IN_DELETE;
+	if (fflags & NOTE_RENAME) /* TODO: or self*/
+		result |= IN_MOVED_TO;
+
+	*flag = result;
+}
+
+
+static int
+inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
+{
+	struct inotify_kevent_copyin_args *ikap;
+	struct inotify_handle *ih;
+	struct inotify_watch *iw;
+	struct kevent *kev;
+	int  kev_count = 0, error;
+
+	ikap = (struct inotify_kevent_copyin_args *)arg;
+	ih = ikap->handle;
+
+	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
+		if (*events > maxevents)
+			break;
+		else if (ikap->count >= ih->nchilds)
+			break;
+
+		kev = &kevp[kev_count];
+		error = inotify_to_kevent(iw, kev);
+		++kev_count;
+		++ikap->count;
+	}
+
+	*events = kev_count;
+	return (0);
+}
+
+static int
+inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
+{
+	struct inotify_kevent_copyin_args *ikap;
+	struct inotify_handle *ih;
+	struct inotify_watch *iw;
+	struct kevent *kev;
+	struct inotify_queue_entry *iqe;
+	inotify_flags rmask;
+	int i;
+
+	ikap = (struct inotify_kevent_copyin_args *)arg;
+	ih = ikap->handle;
+
+	for (i = 0; i < count; ++i) {
+		kev = &kevp[i];
+		iw = (struct inotify_watch *)kev->udata;
+		inotify_from_kevent(kev, &rmask);
+
+		iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
+		iqe->iw = iw;
+		iqe->mask = rmask;
+
+		TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
+	}
+
+	*res += count;
+	ih->queue_size += *res;
+
 	return (0);
 }
 

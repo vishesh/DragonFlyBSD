@@ -484,6 +484,10 @@ skip:
 		hammer_done_transaction(&trans);
 		lwkt_reltoken(&hmp->fs_token);
 	}
+
+	if (error == 0)
+		hammer_knote(ap->a_vp, NOTE_ACCESS);
+
 	return (error);
 }
 
@@ -1013,6 +1017,7 @@ hammer_vop_ncreate(struct vop_ncreate_args *ap)
 			cache_setvp(ap->a_nch, *ap->a_vpp);
 		}
 		hammer_knote(ap->a_dvp, NOTE_WRITE);
+		hammer_knote(ap->a_dvp, NOTE_CREATE);
 	}
 	lwkt_reltoken(&hmp->fs_token);
 	return (error);
@@ -1637,6 +1642,8 @@ hammer_vop_open(struct vop_open_args *ap)
 
 	if ((ap->a_mode & FWRITE) && (ip->flags & HAMMER_INODE_RO))
 		return (EROFS);
+
+	hammer_knote(ap->a_vp, NOTE_OPEN);
 	return(vop_stdopen(ap));
 }
 

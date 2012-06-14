@@ -112,6 +112,15 @@ struct kevent {
 #define	NOTE_RENAME	0x0020			/* vnode was renamed */
 #define	NOTE_REVOKE	0x0040			/* vnode access was revoked */
 
+#define NOTE_ACCESS	0x0080
+#define NOTE_READ	0x0100 /* VYTODO: Irrelevant, remove or replace */
+#define NOTE_OPEN	0x0200
+#define NOTE_CLOSE_WRITE	0x0400
+#define NOTE_CLOSE_NOWRITE	0x0800
+#define NOTE_CREATE	0x1000
+
+#define NOTE_CLOSE	(NOTE_CLOSE_WRITE | NOTE_CLOSE_NOWRITE)
+
 /*
  * data/hint flags for EVFILT_PROC, shared with userspace
  */

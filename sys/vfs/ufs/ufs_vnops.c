@@ -198,6 +198,7 @@ ufs_create(struct vop_old_create_args *ap)
 	if (error)
 		return (error);
 	VN_KNOTE(ap->a_dvp, NOTE_WRITE);
+	VN_KNOTE(ap->a_dvp, NOTE_CREATE);
 	return (0);
 }
 
@@ -278,6 +279,7 @@ ufs_close(struct vop_close_args *ap)
 
 	if (vp->v_sysref.refcnt > 1)
 		ufs_itimes(vp);
+
 	return (vop_stdclose(ap));
 }
 

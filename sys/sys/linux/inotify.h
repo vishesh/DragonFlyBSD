@@ -40,6 +40,7 @@
 #ifndef _DF_BSD_INOTIFY_H
 #define _DF_BSD_INOTIFY_H
 
+#include <sys/eventvar.h>
 #include <sys/fcntl.h>
 #include <sys/filedesc.h>
 #include <sys/stdint.h>
@@ -56,7 +57,7 @@ struct inotify_event {
 #define IN_CLOEXEC  FD_CLOEXEC
 #define IN_NONBLOCK O_NONBLOCK
 
-enum INOTIFY_FLAGS {
+enum _INOTIFY_FLAGS {
 	IN_ACCESS	    =	0x00000001,
 	IN_MODIFY	    =	0x00000002,
 	IN_ATTRIB	    =	0x00000004,
@@ -86,6 +87,8 @@ enum INOTIFY_FLAGS {
 				 IN_MOVED_TO | IN_DELETE | IN_CREATE | IN_DELETE_SELF | \
 				 IN_MOVE_SELF)
 };
+
+typedef uint32_t    inotify_flags;
 
 
 /*
@@ -129,15 +132,23 @@ struct inotify_ucount {
 	SLIST_ENTRY(inotify_ucount) ic_entry;
 };
 
+struct inotify_queue_entry {
+	struct inotify_watch	*iw;
+	inotify_flags		 mask;
+	TAILQ_ENTRY(inotify_queue_entry) entries;
+};
+
 struct inotify_handle {
 	struct file	    *fp;
 	unsigned int	     event_count;
-	unsigned int	     max_events;
+	unsigned int	     max_events; /* TODO: Check */
 	unsigned int	     queue_size;
 	unsigned int	     nchilds;
 	struct filedesc	    *wfdp;
+	struct kqueue	     kq;
 	struct inotify_ucount *iuc;
 	TAILQ_HEAD(, inotify_watch) wlh;
+	TAILQ_HEAD(, inotify_queue_entry) eventq;
 };
 
 struct inotify_watch {
