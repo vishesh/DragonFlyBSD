@@ -126,6 +126,7 @@ typedef uint32_t    inotify_flags;
 #ifdef _KERNEL
 
 #define IW_MARKED_FOR_DELETE	0x01
+#define IW_GOT_ONESHOT		0x02
 
 struct inotify_ucount {
 	uid_t	ic_uid;	

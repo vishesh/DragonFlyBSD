@@ -342,21 +342,20 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		return (error);
 	}
 
+	fo_stat(fp, &st, cred);
+	if ((st.st_mode & S_IFREG) && (mask & IN_ONLYDIR))
+		goto early_error;
+
 	error = INOTIFY_WATCH_INIT(&iw, fp, wd, mask, NULL, path, pathlen);
 	/*kprintf("added name= %s, wd = %d\n", path, wd);*/
 	if (error != 0)
-		goto early_error;
-
-	/* Now check if its a directory and get the entries */
-	fo_stat(fp, &st, cred);
-
-	if ((st.st_mode & S_IFREG) && IN_ONLYDIR)
 		goto early_error;
 
 	++iuc->ic_watches;
 	++ih->nchilds;
 	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
 
+	/* Now check if its a directory and get the entries */
 	if (st.st_mode & S_IFDIR) {
 		kprintf("inotify_add_watch: Got a directory to add.\n");
 		++iw->childs;
@@ -609,6 +608,13 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		kfree(iqe, M_INOTIFY);
 		--ih->queue_size;
 		--iw->iw_qrefs;
+
+		if (iw->mask & IN_ONESHOT) {
+			if (iw->parent == NULL)
+				inotify_rm_watch(ih, iw);
+			else
+				inotify_rm_watch(ih, iw->parent);
+		}
 	}
 
 done:
@@ -933,6 +939,12 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 	if (mask & IN_DELETE_SELF)
 		fflags |= NOTE_DELETE;
 
+	/* flags */
+	if (mask & IN_ONESHOT) {
+		flags |= EV_ONESHOT;
+	}
+
+
 	EV_SET(kev, iw->wd, EVFILT_VNODE, flags, fflags, 0, (void*)iw);
 	return (0);
 }
@@ -1053,10 +1065,18 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		iw = (struct inotify_watch *)kev->udata;
 		inotify_from_kevent(kev, &rmask);
 
+		if ((iw->mask & IN_ONESHOT) && ((iw->iw_marks & IW_GOT_ONESHOT)
+			|| (iw->parent != NULL && iw->parent->iw_marks & IW_GOT_ONESHOT)))
+			continue;
+
 		iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 		iqe->iw = iw;
 		iqe->mask = rmask;
 		++iw->iw_qrefs;
+
+		if (iw->parent != NULL)
+			iw->parent->iw_marks |= IW_GOT_ONESHOT;
+		iw->iw_marks |= IW_GOT_ONESHOT;
 
 		TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
 	}
