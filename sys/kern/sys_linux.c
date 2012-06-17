@@ -303,6 +303,8 @@ INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd, uint32
 	iw->pathname = kmalloc(_pathlen + 1, M_INOTIFY, M_WAITOK);
 	iw->pathlen = _pathlen;
 	iw->childs = -1;
+	iw->iw_qrefs = 0;
+	iw->iw_marks = 0;
 	strcpy(iw->pathname, _path);
 
 	*_iw = iw;
@@ -500,6 +502,19 @@ done:
 }
 
 static void
+inotify_delete_watch(struct inotify_watch *iw)
+{
+	if (iw->fp) {
+		fp_close(iw->fp);
+		iw->fp = NULL;
+	}
+	if (iw->iw_qrefs > 0)
+		return;
+	kfree(iw->pathname, M_INOTIFY);
+	kfree(iw, M_INOTIFY);
+}
+
+static void
 inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 {
 	struct inotify_watch *w1, *wtemp;
@@ -513,6 +528,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 				knote_fdclose(w1->fp, ih->wfdp, w1->wd);
 				TAILQ_REMOVE(&ih->wlh, w1, watchlist);
 				funsetfd(ih->wfdp, w1->wd);
+				w1->iw_marks |= IW_MARKED_FOR_DELETE;
 				inotify_delete_watch(w1);
 				--iw->childs;
 			}
@@ -525,6 +541,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	knote_fdclose(iw->fp, ih->wfdp, iw->wd);
 	TAILQ_REMOVE(&ih->wlh, iw, watchlist);
 	funsetfd(ih->wfdp, iw->wd);
+	iw->iw_marks |= IW_MARKED_FOR_DELETE;
 	inotify_delete_watch(iw);
 }
 
@@ -555,6 +572,11 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 
 	TAILQ_FOREACH_MUTABLE(iqe, &ih->eventq, entries, iqe_temp) {
 		iw = iqe->iw;
+		if (iw->iw_marks & IW_MARKED_FOR_DELETE) {
+			if (--iw->iw_qrefs < 1)
+				inotify_delete_watch(iw);
+			continue;
+		}
 
 		if (iw->parent == NULL) {
 			eventlen = INOTIFY_EVENT_SIZE;
@@ -586,20 +608,12 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		TAILQ_REMOVE(&ih->eventq, iqe, entries);
 		kfree(iqe, M_INOTIFY);
 		--ih->queue_size;
+		--iw->iw_qrefs;
 	}
 
 done:
 	kfree(ie, M_INOTIFY);
 	return (error);
-}
-
-static void
-inotify_delete_watch(struct inotify_watch *iw)
-{
-	/*kprintf("deleting %s\n", iw->pathname);*/
-	fp_close(iw->fp);
-	kfree(iw->pathname, M_INOTIFY);
-	kfree(iw, M_INOTIFY);
 }
 
 static int
@@ -633,6 +647,7 @@ inotify_close(struct file *fp)
 	while (iw != NULL) {
 		iw2 = TAILQ_NEXT(iw, watchlist);
 		knote_fdclose(iw->fp, ih->wfdp, iw->wd);
+		iw->iw_qrefs = 0;
 		inotify_delete_watch(iw);
 		iw = iw2;
 	}
@@ -1041,6 +1056,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 		iqe->iw = iw;
 		iqe->mask = rmask;
+		++iw->iw_qrefs;
 
 		TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
 	}

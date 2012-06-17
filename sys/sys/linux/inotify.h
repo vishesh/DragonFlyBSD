@@ -125,6 +125,8 @@ typedef uint32_t    inotify_flags;
 /* Kernel API */
 #ifdef _KERNEL
 
+#define IW_MARKED_FOR_DELETE	0x01
+
 struct inotify_ucount {
 	uid_t	ic_uid;	
 	uint	ic_watches;
@@ -158,6 +160,8 @@ struct inotify_watch {
 	uint32_t	 pathlen;
 	char		*pathname;
 	int		 childs;
+	uint		 iw_qrefs;
+	int16_t		 iw_marks;
 	struct inotify_handle *handle;
 	struct inotify_watch  *parent;
 	TAILQ_ENTRY(inotify_watch) watchlist;
