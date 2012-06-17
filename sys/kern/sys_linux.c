@@ -890,10 +890,10 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 		fflags |= NOTE_OPEN;
 	if (mask & IN_ACCESS)
 		fflags |= NOTE_ACCESS;
-	if (mask & IN_CLOSE_WRITE && iw->fp->f_flag)
-		fflags |= NOTE_CLOSE;
+	if (mask & IN_CLOSE_WRITE)
+		fflags |= NOTE_CLOSE_WRITE;
 	if (mask & IN_CLOSE_NOWRITE)
-		fflags |= NOTE_CLOSE;
+		fflags |= NOTE_CLOSE_NOWRITE;
 	if (mask & IN_MODIFY)
 		fflags |= NOTE_WRITE;
 	if (mask & IN_CREATE)
@@ -901,9 +901,9 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 	if (mask & IN_ATTRIB)
 		fflags |= NOTE_ATTRIB;
 	if (mask & IN_MOVED_FROM)
-		fflags |= NOTE_WRITE;
-	if (mask & IN_MOVED_TO)
 		fflags |= NOTE_RENAME;
+	if (mask & IN_MOVED_TO)
+		fflags |= NOTE_WRITE;
 	if (mask & IN_MOVE_SELF)
 		fflags |= NOTE_RENAME;
 	if (mask & IN_DELETE)
@@ -920,25 +920,65 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 {
 	uint32_t result;
 	u_int fflags = kev->fflags;
+	struct inotify_watch *iw = (struct inotify_watch *)kev->udata;
 
-	if (fflags & NOTE_OPEN)
+	if (fflags & NOTE_OPEN) {
 		result |= IN_OPEN;
-	if (fflags & NOTE_CLOSE_WRITE)
+	}
+	if (fflags & NOTE_CLOSE_WRITE) {
 		result |= IN_CLOSE_WRITE;
-	if (fflags & NOTE_CLOSE_NOWRITE)
+	}
+	if (fflags & NOTE_CLOSE_NOWRITE) {
 		result |= IN_CLOSE_NOWRITE;
-	if (fflags & NOTE_ACCESS)
+	}
+	if (fflags & NOTE_ACCESS) {
 		result |= IN_ACCESS;
-	if (fflags & NOTE_WRITE) /* TODO: or check for dir */
-		result |= IN_MODIFY;
-	if (fflags & NOTE_ATTRIB)
+	}
+	if (fflags & NOTE_WRITE) {
+		if (iw->parent == NULL && iw->childs < 0) {
+			/* regular file */
+			result |= IN_MODIFY;
+		}
+		else if (iw->parent == NULL && iw->childs >= 0) {
+			/* directory */
+			/* NOTE: also triggered when a file is moved in,
+			 * removed - IN_MOVED_TO? */
+			result &= ~IN_MODIFY;
+			kprintf("inotify: something added or removed?\n");
+		}
+		else {
+			kprintf("inotify: NOTE_WRITE for some file in directory.\n");
+			result |= IN_MODIFY;
+		}
+	}
+	if (fflags & NOTE_ATTRIB) {
 		result |= IN_ATTRIB;
-	if (fflags & NOTE_CREATE) /* TODO: in case of dir, check for new file */
+	}
+	if (fflags & NOTE_CREATE) {
 		result |= IN_CREATE;
-	if (fflags & NOTE_DELETE)
-		result |= IN_DELETE;
-	if (fflags & NOTE_RENAME) /* TODO: or self*/
-		result |= IN_MOVED_TO;
+		/* TODO: Find the newly created file/dir */
+		/* NOTE: NOTE_WRITE also happends */
+		kprintf("inotify: created a new file/dir?\n");
+	}
+	if (fflags & NOTE_DELETE) {
+		if (iw->parent == NULL) {
+			result |= IN_DELETE_SELF;
+		}
+		else {
+			result |= IN_DELETE; /* file deleted under dir */
+		}
+	}
+	if (fflags & NOTE_RENAME) {
+		if (iw->parent == NULL) {
+			result |= IN_MOVE_SELF;
+			/* TODO: New path? */
+			kprintf("inotify: renamed un-parented watch\n");
+		}
+		else {
+			/* TODO: IN MOVED FROM */
+			kprintf("inotify: renamed parented watch\n");
+		}
+	}
 
 	*flag = result;
 }
