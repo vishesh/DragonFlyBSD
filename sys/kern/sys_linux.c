@@ -51,6 +51,7 @@
 #include <sys/sysproto.h>
 #include <sys/vnode.h>
 
+/* TODO: Delete pending events when watches are removed */
 /* TODO: Find and replace with inotify_flags */
 
 #define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
@@ -267,7 +268,10 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 
 	iht = inotify_find_watch(ih, path);
 	if (iht != NULL) {
-		iht->mask = args->mask;
+		if (args->mask & IN_MASK_ADD)
+			iht->mask |= args->mask;
+		else
+			iht->mask = args->mask;
 		res = iht->wd;
 		error = 0;
 		goto done;
@@ -341,13 +345,16 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	if (error != 0)
 		goto early_error;
 
-	++iuc->ic_watches;
-	++ih->nchilds;
-
-	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
-
 	/* Now check if its a directory and get the entries */
 	fo_stat(fp, &st, cred);
+
+	if ((st.st_mode & S_IFREG) && IN_ONLYDIR)
+		goto early_error;
+
+	++iuc->ic_watches;
+	++ih->nchilds;
+	TAILQ_INSERT_TAIL(&ih->wlh, iw, watchlist);
+
 	if (st.st_mode & S_IFDIR) {
 		kprintf("inotify_add_watch: Got a directory to add.\n");
 		++iw->childs;
@@ -978,6 +985,9 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 			/* TODO: IN MOVED FROM */
 			kprintf("inotify: renamed parented watch\n");
 		}
+	}
+	if (fflags & NOTE_REVOKE) {
+		result |= IN_UNMOUNT; /* or revoked */
 	}
 
 	*flag = result;
