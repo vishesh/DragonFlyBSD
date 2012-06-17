@@ -1,4 +1,3 @@
-
 /*
  * Copyright (c) 2012 The DragonFly Project.  All rights reserved.
  * 
@@ -87,6 +86,7 @@ static int	inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev);
 
 struct inotify_kevent_copyin_args {
 	struct inotify_handle *handle;
+	struct inotify_watch  *last_iw;
 	int count;
 	int error;
 };
@@ -538,15 +538,13 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	ika.handle = ih;
 	ika.error = 0;
 	ika.count = 0;
-
-	if (ih == NULL)
-		return 0;
+	ika.last_iw = TAILQ_FIRST(&ih->wlh);
 
 	error = kern_kevent(&ih->kq, nevents, &res, &ika,
 				inotify_copyin, inotify_copyout, NULL);
 
 	if (error != 0)
-		return 0;
+		goto done;
 
 	TAILQ_FOREACH_MUTABLE(iqe, &ih->eventq, entries, iqe_temp) {
 		iw = iqe->iw;
@@ -556,6 +554,7 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			ie->wd = iw->wd;
 			ie->mask = 0;
 			ie->len = 0;
+
 		}
 		else {
 			eventlen = INOTIFY_EVENT_SIZE + iw->pathlen;
@@ -578,9 +577,11 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		}
 		
 		TAILQ_REMOVE(&ih->eventq, iqe, entries);
+		kfree(iqe, M_INOTIFY);
 		--ih->queue_size;
 	}
 
+done:
 	kfree(ie, M_INOTIFY);
 	return (error);
 }
@@ -609,7 +610,6 @@ inotify_close(struct file *fp)
 	struct inotify_queue_entry *iqe, *iqe_next;
 	struct filedesc *fdp;
 
-	/*kprintf("called inotify close\n");*/
 	ih = (struct inotify_handle*)fp->f_data;
 
 	fdp = ih->wfdp;
@@ -957,7 +957,7 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	if (fflags & NOTE_CREATE) {
 		result |= IN_CREATE;
 		/* TODO: Find the newly created file/dir */
-		/* NOTE: NOTE_WRITE also happends */
+		/* NOTE: NOTE_WRITE also happens */
 		kprintf("inotify: created a new file/dir?\n");
 	}
 	if (fflags & NOTE_DELETE) {
@@ -991,24 +991,21 @@ inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 	struct inotify_handle *ih;
 	struct inotify_watch *iw;
 	struct kevent *kev;
-	int  kev_count = 0, error;
+	int  error;
 
 	ikap = (struct inotify_kevent_copyin_args *)arg;
 	ih = ikap->handle;
+	iw = ikap->last_iw;
 
-	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
-		if (*events > maxevents)
-			break;
-		else if (ikap->count >= ih->nchilds)
-			break;
-
-		kev = &kevp[kev_count];
+	while ( iw != NULL && *events < maxevents) {
+		kev = &kevp[*events];
 		error = inotify_to_kevent(iw, kev);
-		++kev_count;
 		++ikap->count;
+		iw = TAILQ_NEXT(iw, watchlist);
+		++*events;
 	}
 
-	*events = kev_count;
+	ikap->last_iw = iw;
 	return (0);
 }
 
@@ -1040,6 +1037,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 
 	*res += count;
 	ih->queue_size += *res;
+	ikap->count = 0;
 
 	return (0);
 }
