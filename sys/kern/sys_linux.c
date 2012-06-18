@@ -268,10 +268,11 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 
 	iht = inotify_find_watch(ih, path);
 	if (iht != NULL) {
-		if (args->mask & IN_MASK_ADD)
+		if (args->mask & IN_MASK_ADD) {
 			iht->mask |= args->mask;
-		else
+		} else {
 			iht->mask = args->mask;
+		}
 		res = iht->wd;
 		error = 0;
 		goto done;
@@ -485,8 +486,7 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 		kprintf("inotify_rm_watch: INVAL wd passed\n");
 		error = EINVAL;
 		goto done;
-	}
-	else if (iw->parent != NULL) {
+	} else if (iw->parent != NULL) {
 		kprintf("inotify_rm_watch: INVAL wd passed. Not available for user.\n");
 		error = EINVAL;
 		goto done;
@@ -583,8 +583,7 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			ie->mask = 0;
 			ie->len = 0;
 
-		}
-		else {
+		} else {
 			eventlen = INOTIFY_EVENT_SIZE + iw->pathlen;
 			ie->wd = iw->parent->wd;
 			ie->mask = IN_ISDIR;
@@ -610,10 +609,11 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		--iw->iw_qrefs;
 
 		if (iw->mask & IN_ONESHOT) {
-			if (iw->parent == NULL)
+			if (iw->parent == NULL) {
 				inotify_rm_watch(ih, iw);
-			else
+			} else {
 				inotify_rm_watch(ih, iw->parent);
+			}
 		}
 	}
 
@@ -658,8 +658,9 @@ inotify_close(struct file *fp)
 		iw = iw2;
 	}
 
-	if (fdp->fd_files != fdp->fd_builtin_files)
+	if (fdp->fd_files != fdp->fd_builtin_files) {
 		kfree(fdp->fd_files, M_INOTIFY);
+	}
 	if (fdp->fd_cdir) {
 		cache_drop(&fdp->fd_ncdir);
 		vrele(fdp->fd_cdir);
@@ -972,15 +973,13 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 		if (iw->parent == NULL && iw->childs < 0) {
 			/* regular file */
 			result |= IN_MODIFY;
-		}
-		else if (iw->parent == NULL && iw->childs >= 0) {
+		} else if (iw->parent == NULL && iw->childs >= 0) {
 			/* directory */
 			/* NOTE: also triggered when a file is moved in,
 			 * removed - IN_MOVED_TO? */
 			result &= ~IN_MODIFY;
 			kprintf("inotify: something added or removed?\n");
-		}
-		else {
+		} else {
 			kprintf("inotify: NOTE_WRITE for some file in directory.\n");
 			result |= IN_MODIFY;
 		}
@@ -997,8 +996,7 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	if (fflags & NOTE_DELETE) {
 		if (iw->parent == NULL) {
 			result |= IN_DELETE_SELF;
-		}
-		else {
+		} else {
 			result |= IN_DELETE; /* file deleted under dir */
 		}
 	}
@@ -1007,8 +1005,7 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 			result |= IN_MOVE_SELF;
 			/* TODO: New path? */
 			kprintf("inotify: renamed un-parented watch\n");
-		}
-		else {
+		} else {
 			/* TODO: IN MOVED FROM */
 			kprintf("inotify: renamed parented watch\n");
 		}
@@ -1066,8 +1063,9 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		inotify_from_kevent(kev, &rmask);
 
 		if ((iw->mask & IN_ONESHOT) && ((iw->iw_marks & IW_GOT_ONESHOT)
-			|| (iw->parent != NULL && iw->parent->iw_marks & IW_GOT_ONESHOT)))
+			|| (iw->parent != NULL && iw->parent->iw_marks & IW_GOT_ONESHOT))) {
 			continue;
+		}
 
 		iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 		iqe->iw = iw;
