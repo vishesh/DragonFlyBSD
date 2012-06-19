@@ -152,7 +152,7 @@ inotify_find_iuc(uid_t id)
 	struct inotify_ucount *iuc;
 	SLIST_FOREACH(iuc, &iuc_head, ic_entry) {
 		if (iuc->ic_uid == id)
-			return iuc;
+			return (iuc);
 	}
 	
 	iuc = kmalloc(sizeof *iuc, M_INOTIFY, M_WAITOK);
@@ -161,7 +161,7 @@ inotify_find_iuc(uid_t id)
 	iuc->ic_instances = 0;
 
 	SLIST_INSERT_HEAD(&iuc_head, iuc, ic_entry);
-	return iuc;
+	return (iuc);
 }
 
 int
@@ -294,7 +294,7 @@ INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd, inotif
 {
 	struct inotify_watch *iw = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);
 	if (iw == NULL)
-		return ENOMEM;
+		return (ENOMEM);
 
 	iw->fp = _fp;
 	iw->mask = _mask;
@@ -308,7 +308,7 @@ INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd, inotif
 	strcpy(iw->pathname, _path);
 
 	*_iw = iw;
-	return 0;
+	return (0);
 }
 
 /*TODO: Check user permission to read file */
@@ -627,7 +627,7 @@ static int
 inotify_shutdown(struct file *fp, int how)
 {
 	kprintf("inotify shutdown called\n");
-	return 0;
+	return (0);
 }
 
 static int
@@ -679,7 +679,7 @@ inotify_close(struct file *fp)
 	kfree(fdp, M_INOTIFY);
 	kfree(ih, M_INOTIFY);
 
-	return 0;
+	return (0);
 }
 
 static int
@@ -687,7 +687,7 @@ inotify_stat(struct file *fp, struct stat *st, struct ucred *cred)
 {
 	/*struct inotify_handle *ih = (struct inotify_handle *)fp->f_data;*/
 	bzero((void *)st, sizeof(*st));
-	return 0;
+	return (0);
 }
 
 static struct inotify_watch*
@@ -699,7 +699,7 @@ inotify_find_watchwd(struct inotify_handle *ih, int wd)
 		if (iw->wd == wd)
 			return iw;
 	}
-	return NULL;
+	return (NULL);
 }
 
 /*XXX: Index the list by pathname for faster lookup */
@@ -710,9 +710,9 @@ inotify_find_watch(struct inotify_handle *ih, const char *path)
 
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
 		if (strcmp(iw->pathname, path) == 0)
-			return iw;
+			return (iw);
 	}
-	return NULL;
+	return (NULL);
 }
 
 /* NOTE: Following are  Copied from fdalloc and modified */
