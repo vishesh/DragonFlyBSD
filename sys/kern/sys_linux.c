@@ -987,11 +987,9 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 			/* regular file */
 			result |= IN_MODIFY;
 		} else if (iw->parent == NULL && iw->childs >= 0) {
-			/* directory */
-			/* NOTE: also triggered when a file is moved in,
-			 * removed - IN_MOVED_TO? */
+			/* directory: file is created, moved in or out */
+			/* TODO: Check if moved in or out! */
 			result &= ~IN_MODIFY;
-			kprintf("inotify: something added or removed?\n");
 		} else {
 			kprintf("inotify: NOTE_WRITE for some file in directory.\n");
 			result |= IN_MODIFY;
@@ -1002,7 +1000,7 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	}
 	if (fflags & NOTE_CREATE) {
 		result |= IN_CREATE;
-		/* TODO: Find the newly created file/dir */
+		/* TODO: Find the newly created file/dir and to watch */
 		/* NOTE: NOTE_WRITE also happens */
 		kprintf("inotify: created a new file/dir?\n");
 	}
@@ -1016,11 +1014,11 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	if (fflags & NOTE_RENAME) {
 		if (iw->parent == NULL) {
 			result |= IN_MOVE_SELF;
-			/* TODO: New path? */
-			kprintf("inotify: renamed un-parented watch\n");
+			/* CHECK: New path? */
 		} else {
-			/* TODO: IN MOVED FROM */
+			/* TODO: get the name and change it */
 			kprintf("inotify: renamed parented watch\n");
+			result |= IN_MOVED_FROM;
 		}
 	}
 	if (fflags & NOTE_REVOKE) {
