@@ -33,7 +33,7 @@
  * 
  */
 
-#include <sys/linux/inotify.h>
+#include <sys/inotify.h>
 #include <sys/dirent.h>
 #include <sys/file.h>
 #include <sys/file2.h>
