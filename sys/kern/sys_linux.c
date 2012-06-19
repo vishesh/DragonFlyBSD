@@ -572,11 +572,6 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 
 	TAILQ_FOREACH_MUTABLE(iqe, &ih->eventq, entries, iqe_temp) {
 		iw = iqe->iw;
-		if (iw->iw_marks & IW_MARKED_FOR_DELETE) {
-			if (--iw->iw_qrefs < 1)
-				inotify_delete_watch(iw);
-			continue;
-		}
 
 		if (iw->parent == NULL) {
 			eventlen = INOTIFY_EVENT_SIZE;
@@ -598,6 +593,12 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		ie->mask |= iqe->mask;
 		ie->cookie = 0;
 
+		if (iw->iw_marks & IW_MARKED_FOR_DELETE ||
+				iw->iw_marks & IW_IGNORED ||
+				ie->mask & IN_UNMOUNT) {
+			ie->mask |= IN_IGNORED;
+		}
+
 		error = uiomove((caddr_t)ie, eventlen, uio);
 		if (error > 0) {
 			kprintf("inotify_read: error while transferring\n");
@@ -614,6 +615,17 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 				inotify_rm_watch(ih, iw);
 			} else {
 				inotify_rm_watch(ih, iw->parent);
+			}
+		}
+		if (iw->iw_marks & IW_MARKED_FOR_DELETE) {
+			if (--iw->iw_qrefs < 1)
+				inotify_delete_watch(iw);
+		} else if (ie->mask & IN_IGNORED) {
+			if (iw->parent == NULL) {
+				inotify_rm_watch(ih, iw);
+			} else {
+				--iw->parent->childs;
+				inotify_rm_watch(ih, iw);
 			}
 		}
 	}
@@ -1078,6 +1090,12 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		iw->iw_marks |= IW_GOT_ONESHOT;
 
 		TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
+
+		if (rmask & IN_DELETE) {
+			iw->iw_marks |= IW_IGNORED;
+		} else if (rmask & IN_DELETE_SELF) {
+			iw->iw_marks |= IW_IGNORED;
+		}
 	}
 
 	*res += count;
