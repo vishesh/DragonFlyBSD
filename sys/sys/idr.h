@@ -3,6 +3,8 @@
 
 #ifdef _KERNEL
 
+#define IDRNCOUNT   15
+
 #include <sys/spinlock.h>
 
 struct idr_node {
@@ -17,10 +19,11 @@ struct idr {
 	int	    idr_lastindex;
 	int	    idr_freeindex;
 	int	    idr_nexpands;
+	struct	    idr_node idr_builtins[IDRNCOUNT]
 	struct	    spinlock idr_spin;
 };
 
-void	*idr_find(struct idr *idp, int id);
+void	*idr_get(struct idr *idp, int id);
 void	*idr_replace(struct idr *idp, void *ptr, int id);
 void	*idr_remove(struct idr *idp, int id);
 void	 idr_remove_all(struct idr *idp);
