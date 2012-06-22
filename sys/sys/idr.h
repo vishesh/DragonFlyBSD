@@ -33,6 +33,17 @@ void	 idr_init(struct idr *idp, int size);
 int	 idr_alloc(struct idr *idp, int want, int lim, int *result);
 void	 idr_set(struct idr *idp, void *ptr, int id);
 
+void * __inline idr_node(struct idr *idp, int fd)
+{
+	return idp->idr_nodes[fd];
+}
+
+void * __inline idr_data(struct idr *idp, int fd)
+{
+	return idp->idr_nodes[fd]->data;
+}
+
+
 #endif /* _KERNEL */
 
 #endif /* _IDR_H_ */

@@ -8,6 +8,8 @@
 
 MALLOC_DEFINE(M_IDR, "idr", "Integer ID management");
 
+/* TODO: add real checks at place of few asserts */
+
 static void  idr_grow(struct idr *idp, int want);
 static void  idr_reserve(struct idr *idp, int id, int incr);
 
