@@ -199,11 +199,9 @@ idr_grow(struct idr *idp, int want)
 	idp->idr_nodes = newnodes;
 	idp->idr_count = nf;
 
-	if (oldnodes == idp->idr_builtins) {
-		spin_unlock(&idp->idr_spin);
-		kfree(oldnodes, M_IDR);
-		spin_lock(&idp->idr_spin);
-	}
+	spin_unlock(&idp->idr_spin);
+	kfree(oldnodes, M_IDR);
+	spin_lock(&idp->idr_spin);
 
 	idp->idr_nexpands++;
 }
@@ -234,8 +232,7 @@ idr_remove_all(struct idr *idp)
 void
 idr_destroy(struct idr *idp)
 {
-	if (idp->idr_nodes != idp->idr_idr_builtins)
-		kfree(idp->idr_nodes, M_IDR);
+	kfree(idp->idr_nodes, M_IDR);
 }
 
 void *
@@ -285,13 +282,12 @@ idr_replace(struct idr *idp, void *ptr, int id)
 	return (ret);
 }
 
-/* XXX: Temporarily use a builtin. Decide later. */
 void
-idr_init(struct idr *idp)
+idr_init(struct idr *idp, int size)
 {
 	memset(idp, 0, sizeof(struct idr));
-	idp->idr_nodes = idp->idr_builtins;
-	idp->idr_count = IDRNCOUNT;
+	idp->idr_nodes = kmalloc(size * sizeof *idr, M_IDR, M_WAITOK | M_ZERO);
+	idp->idr_count = size;
 	idp->idr_lastindex = -1;
 	spin_init(&idp->idr_spin);
 }

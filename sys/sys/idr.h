@@ -19,7 +19,6 @@ struct idr {
 	int	    idr_lastindex;
 	int	    idr_freeindex;
 	int	    idr_nexpands;
-	struct	    idr_node idr_builtins[IDRNCOUNT]
 	struct	    spinlock idr_spin;
 };
 
