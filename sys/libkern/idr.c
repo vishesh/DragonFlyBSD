@@ -223,7 +223,6 @@ idr_remove(struct idr *idp, int id)
 	idrfixup(idp, id);
 
 	return (ptr);
-
 }
 
 void
@@ -237,6 +236,7 @@ idr_destroy(struct idr *idp)
 	kfree(idp->idr_nodes, M_IDR);
 }
 
+/* XXX: add checks */
 void *
 idr_get(struct idr *idp, int id)
 {

@@ -3,8 +3,6 @@
 
 #ifdef _KERNEL
 
-#define IDRNCOUNT   15
-
 #include <sys/spinlock.h>
 
 struct idr_node {
