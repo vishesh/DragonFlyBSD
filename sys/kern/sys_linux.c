@@ -229,6 +229,7 @@ inotify_init(int flags, int *result)
 
 	ih->wfdp = fdinit(curthread->td_proc);
 	kqueue_init(&ih->kq, ih->wfdp);
+	ih->kq.kq_state |= KQ_DATASYS;
 
 done:
 	*result = fd;
@@ -958,7 +959,6 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 		flags |= EV_ONESHOT;
 	}
 
-
 	EV_SET(kev, iw->wd, EVFILT_VNODE, flags, fflags, 0, (void*)iw);
 	return (0);
 }
@@ -1000,9 +1000,8 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	}
 	if (fflags & NOTE_CREATE) {
 		result |= IN_CREATE;
-		/* TODO: Find the newly created file/dir and to watch */
 		/* NOTE: NOTE_WRITE also happens */
-		kprintf("inotify: created a new file/dir?\n");
+		/*kprintf("inotify: created %s\n", (char*)kev->data);*/
 	}
 	if (fflags & NOTE_DELETE) {
 		if (iw->parent == NULL) {

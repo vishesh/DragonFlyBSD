@@ -1325,6 +1325,15 @@ filter_event(struct knote *kn, long hint)
 	return (ret);
 }
 
+void
+knote_data(struct klist *list, intptr_t data)
+{
+	struct knote *kn;
+	SLIST_FOREACH(kn, list, kn_next) {
+		kn->kn_sdata = data;
+	}
+}
+
 /*
  * Walk down a list of knotes, activating them if their event has triggered.
  *

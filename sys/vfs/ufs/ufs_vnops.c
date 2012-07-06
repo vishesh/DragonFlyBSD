@@ -134,6 +134,9 @@ union _qcvt {
 #define VN_KNOTE(vp, b) \
 	KNOTE(&vp->v_pollinfo.vpi_kqinfo.ki_note, (b))
 
+#define VN_KNOTE_DATA(vp, b) \
+	KNOTE_DATA(&vp->v_pollinfo.vpi_kqinfo.ki_note, (b))
+
 #define OFSFMT(vp)		((vp)->v_mount->mnt_maxsymlinklen <= 0)
 
 /*
@@ -198,6 +201,7 @@ ufs_create(struct vop_old_create_args *ap)
 	if (error)
 		return (error);
 	VN_KNOTE(ap->a_dvp, NOTE_WRITE);
+	VN_KNOTE_DATA(ap->a_dvp, (intptr_t)ap->a_cnp);
 	VN_KNOTE(ap->a_dvp, NOTE_CREATE);
 	return (0);
 }
@@ -2212,11 +2216,23 @@ filt_ufswrite(struct knote *kn, long hint)
 static int
 filt_ufsvnode(struct knote *kn, long hint)
 {
+	struct kevent *kevp = &kn->kn_kevent;
+	struct componentname *cnp;
+
 	if (kn->kn_sfflags & hint)
 		kn->kn_fflags |= hint;
 	if (hint == NOTE_REVOKE) {
 		kn->kn_flags |= (EV_EOF | EV_NODATA);
 		return (1);
+	}
+	if (hint == NOTE_CREATE) {
+		cnp = (struct componentname *)kn->kn_sdata;
+		if (kn->kn_kq->kq_state & KQ_DATASYS) {
+			/*copystr(cnp->cn_nameptr, kevp->data, cnp->cn_namelen);*/
+			kevp->data = (intptr_t)cnp->cn_nameptr; /*XXX: hack */
+		} else if (kn->kn_sdata != 0) {
+			copyout((void*)cnp->cn_nameptr, (void*)kevp->data, cnp->cn_namelen);
+		}
 	}
 	return (kn->kn_fflags != 0);
 }

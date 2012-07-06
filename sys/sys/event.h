@@ -163,6 +163,7 @@ MALLOC_DECLARE(M_KQUEUE);
 #endif
 
 #define KNOTE(list, hint)	if ((list) != NULL) knote(list, hint)
+#define KNOTE_DATA(list, data)	if ((list) != NULL) knote_data(list, data)
 
 /*
  * Flag indicating hint is a signal.  Used by EVFILT_SIGNAL, and also
@@ -236,6 +237,7 @@ int kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
     struct timespec *tsp);
 
 extern void	knote(struct klist *list, long hint);
+extern void	knote_data(struct klist *list, intptr_t data);
 extern void	knote_insert(struct klist *klist, struct knote *kn);
 extern void	knote_remove(struct klist *klist, struct knote *kn);
 /*extern void	knote_empty(struct klist *list);*/
