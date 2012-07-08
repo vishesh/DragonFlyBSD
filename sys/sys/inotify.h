@@ -109,6 +109,8 @@ struct inotify_queue_entry {
 	struct inotify_watch	*iw;
 	inotify_flags		 mask;
 	TAILQ_ENTRY(inotify_queue_entry) entries;
+	int			 namelen;
+	char			 name[0];
 };
 
 struct inotify_handle {

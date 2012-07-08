@@ -41,6 +41,7 @@
 #include <sys/kernel.h>
 #include <sys/libkern.h>
 #include <sys/malloc.h>
+#include <sys/namei.h>
 #include <sys/nlookup.h>
 #include <sys/param.h>
 #include <sys/queue.h>
@@ -290,8 +291,9 @@ done:
 }
 
 static __inline int
-INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd, inotify_flags _mask,
-		struct inotify_watch *_parent, const char *_path, uint32_t _pathlen)
+INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd,
+		inotify_flags _mask, struct inotify_watch *_parent,
+		const char *_path, uint32_t _pathlen)
 {
 	struct inotify_watch *iw = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);
 	if (iw == NULL)
@@ -577,8 +579,15 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		if (iw->parent == NULL) {
 			eventlen = INOTIFY_EVENT_SIZE;
 			ie->wd = iw->wd;
-			ie->mask = 0;
-			ie->len = 0;
+			if (iqe->mask & IN_CREATE) {
+				ie->mask = IN_ISDIR;
+				ie->len = iqe->namelen;
+				eventlen += ie->len;
+				strcpy(ie->name, iqe->name);
+			} else {
+				ie->mask = 0;
+				ie->len = 0;
+			}
 
 		} else {
 			eventlen = INOTIFY_EVENT_SIZE + iw->pathlen;
@@ -990,6 +999,12 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 			/* directory: file is created, moved in or out */
 			/* TODO: Check if moved in or out! */
 			result &= ~IN_MODIFY;
+			if ((fflags & NOTE_CREATE) == 0 &&
+					(fflags & NOTE_DELETE) == 0 &&
+					(fflags & NOTE_RENAME) == 0) {
+				result |= IN_MOVED_TO;
+				kprintf("inotify: IN_MOVED_TO\n");
+			}
 		} else {
 			kprintf("inotify: NOTE_WRITE for some file in directory.\n");
 			result |= IN_MODIFY;
@@ -1061,8 +1076,9 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 	struct inotify_watch *iw;
 	struct kevent *kev;
 	struct inotify_queue_entry *iqe;
+	char *create_name;
 	inotify_flags rmask;
-	int i;
+	int i, create_len;
 
 	ikap = (struct inotify_kevent_copyin_args *)arg;
 	ih = ikap->handle;
@@ -1077,7 +1093,17 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 			continue;
 		}
 
-		iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
+		if (rmask & IN_CREATE) {
+			create_name = (char *)kev->data;
+			create_len = strlen(create_name);
+			iqe = kmalloc((sizeof *iqe)+create_len, M_INOTIFY, M_WAITOK);
+			iqe->namelen = create_len;
+			strcpy(iqe->name, create_name);
+		} else {
+			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
+			iqe->namelen = 0;
+		}
+
 		iqe->iw = iw;
 		iqe->mask = rmask;
 		++iw->iw_qrefs;
