@@ -31,6 +31,7 @@
 #include <sys/kernel.h>
 #include <sys/proc.h>
 #include <sys/malloc.h> 
+#include <sys/namei.h>
 #include <sys/unistd.h>
 #include <sys/file.h>
 #include <sys/lock.h>
@@ -1326,12 +1327,40 @@ filter_event(struct knote *kn, long hint)
 }
 
 void
-knote_data(struct klist *list, intptr_t data)
+knote_data(struct klist *list, int hint, intptr_t data)
 {
 	struct knote *kn;
+	struct kevent *kevp;
+	struct kevent_note_entry *knep;
+	struct componentname *cnp;
+	char *str = 0;
+	TAILQ_HEAD(kneh, kevent_note_entry) *head;
+
 	SLIST_FOREACH(kn, list, kn_next) {
-		kn->kn_kevent.data = kn->kn_sdata; /* save data back */
-		kn->kn_sdata = data;
+		kevp = &kn->kn_kevent;
+		/*kprintf("kevp->data =  %p, kn->kn_sdata = %p, hint = %d\n",*/
+				/*(void*)kevp->data, (void*)kn->kn_sdata, hint);*/
+
+		if (kn->kn_sdata == 0)
+			continue;
+
+		if ((hint & NOTE_CREATE) > 0) {
+			cnp = (struct componentname *)data;
+			if (kn->kn_kq->kq_state & KQ_DATASYS) {
+				str = cnp->cn_nameptr; /*XXX: hack */
+				head = (struct kneh *)kn->kn_sdata;
+				knep = kmalloc(sizeof *knep, M_KQUEUE, M_WAITOK);
+				knep->hint = hint;
+				knep->data = (void *)str;
+				kevp->data = kn->kn_sdata;
+				kprintf("inserting => str = %p, data = %p, knep = %p\n",
+						(void*)str, (void*)knep->data,
+						(void*)knep);
+				TAILQ_INSERT_TAIL(head, knep, entries);
+			} else if (kn->kn_sdata != 0) {
+				copyout((void *)cnp->cn_nameptr, (void *)kevp->data, cnp->cn_namelen);
+			}
+		}
 	}
 }
 
