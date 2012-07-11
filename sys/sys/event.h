@@ -207,6 +207,12 @@ struct knote {
 	caddr_t			kn_hook;
 };
 
+struct kevent_note_entry {
+	int	 hint;
+	void	*data;
+	TAILQ_ENTRY(kevent_note_entry) entries;
+};
+
 #define KN_ACTIVE	0x0001			/* event has been triggered */
 #define KN_QUEUED	0x0002			/* event is on queue */
 #define KN_DISABLED	0x0004			/* event is disabled */

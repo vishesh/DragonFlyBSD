@@ -2218,6 +2218,9 @@ filt_ufsvnode(struct knote *kn, long hint)
 {
 	struct kevent *kevp = &kn->kn_kevent;
 	struct componentname *cnp;
+	struct kevent_note_entry *knep;
+	char *str;
+	TAILQ_HEAD(kneh, kevent_note_entry) *head;
 
 	if (kn->kn_sfflags & hint)
 		kn->kn_fflags |= hint;
@@ -2229,7 +2232,17 @@ filt_ufsvnode(struct knote *kn, long hint)
 		cnp = (struct componentname *)kn->kn_sdata;
 		if (kn->kn_kq->kq_state & KQ_DATASYS) {
 			/*copystr(cnp->cn_nameptr, kevp->data, cnp->cn_namelen);*/
-			kevp->data = (intptr_t)cnp->cn_nameptr; /*XXX: hack */
+			if (kn->kn_kevent.data != 0) {
+				str = cnp->cn_nameptr; /*XXX: hack */
+				knep = kmalloc(sizeof *knep, M_KQUEUE, M_WAITOK);
+				knep->hint = hint;
+				knep->data = (void*)str;
+				head = (struct kneh*)kevp->data;
+				kprintf("adding in head=%p, sdata=%p, data=%p\n", head,
+						(void*)kn->kn_sdata, (void*)kevp->data);
+				TAILQ_INSERT_TAIL(head, knep, entries);
+				kprintf("done\n");
+			}
 		} else if (kn->kn_sdata != 0) {
 			copyout((void*)cnp->cn_nameptr, (void*)kevp->data, cnp->cn_namelen);
 		}

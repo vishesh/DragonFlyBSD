@@ -1330,6 +1330,7 @@ knote_data(struct klist *list, intptr_t data)
 {
 	struct knote *kn;
 	SLIST_FOREACH(kn, list, kn_next) {
+		kn->kn_kevent.data = kn->kn_sdata; /* save data back */
 		kn->kn_sdata = data;
 	}
 }

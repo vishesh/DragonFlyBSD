@@ -137,6 +137,7 @@ struct inotify_watch {
 	int16_t		 iw_marks;
 	struct inotify_handle *handle;
 	struct inotify_watch  *parent;
+	TAILQ_HEAD(, kevent_note_entry) knel;
 	TAILQ_ENTRY(inotify_watch) watchlist;
 };
 

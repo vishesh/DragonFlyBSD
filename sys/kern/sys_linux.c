@@ -351,6 +351,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		goto early_error;
 
 	error = INOTIFY_WATCH_INIT(&iw, fp, wd, mask, NULL, path, pathlen);
+	TAILQ_INIT(&iw->knel);
 	/*kprintf("added name= %s, wd = %d\n", path, wd);*/
 	if (error != 0)
 		goto early_error;
@@ -556,6 +557,7 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	struct inotify_watch *iw;
 	struct inotify_queue_entry *iqe, *iqe_temp;
 	struct inotify_event *ie;
+	struct kevent_note_entry *knep1, *knep2;
 	int error, res = 0, nevents;
 	int eventlen;
 
@@ -584,6 +586,12 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 				ie->len = iqe->namelen;
 				eventlen += ie->len;
 				strcpy(ie->name, iqe->name);
+
+				TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
+					kprintf("found: %s\n", (char*)knep1->data);
+					/*TAILQ_REMOVE(&iw->knel, knep1, entries);*/
+					/*kfree(knep1, M_KQUEUE);*/
+				}
 			} else {
 				ie->mask = 0;
 				ie->len = 0;
@@ -937,6 +945,7 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 	u_int flags = EV_ADD | EV_ENABLE | EV_CLEAR;
 	u_int fflags = NOTE_REVOKE | NOTE_RENAME;
 	inotify_flags mask = iw->mask;
+	intptr_t knel_head;
 
 	if (mask & IN_OPEN)
 		fflags |= NOTE_OPEN;
@@ -968,7 +977,12 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 		flags |= EV_ONESHOT;
 	}
 
-	EV_SET(kev, iw->wd, EVFILT_VNODE, flags, fflags, 0, (void*)iw);
+	if (iw->parent == NULL) {
+		knel_head = (intptr_t)&iw->knel;
+	} else {
+		knel_head = (intptr_t)&iw->parent->knel;
+	}
+	EV_SET(kev, iw->wd, EVFILT_VNODE, flags, fflags, knel_head, (void*)iw);
 	return (0);
 }
 
