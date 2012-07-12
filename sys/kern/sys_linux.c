@@ -399,7 +399,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 			/* now check if given entry is again directory
 			 * and this time we ignore them 
 			 */
-			if ( strcmp(direp->d_name, ".") == 0 ||
+			if (strcmp(direp->d_name, ".") == 0 ||
 					strcmp(direp->d_name, "..") == 0) {
 				continue;
 			}
@@ -1008,6 +1008,7 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 			/* TODO: Check if moved in or out! */
 			result &= ~IN_MODIFY;
 			if ((fflags & NOTE_CREATE) == 0 &&
+					(fflags & ~NOTE_CREATE) != 0 &&
 					(fflags & NOTE_DELETE) == 0 &&
 					(fflags & NOTE_RENAME) == 0) {
 				result |= IN_MOVED_TO;
@@ -1138,7 +1139,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 				continue;
 			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 			iqe->namelen = 0;
-			rmask &= ~IN_CREATE;
+			/*rmask &= ~IN_CREATE;*/
 		} else {
 			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 			iqe->namelen = 0;
