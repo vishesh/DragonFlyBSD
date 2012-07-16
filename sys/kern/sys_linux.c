@@ -62,6 +62,10 @@ MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
 static int	inotify_init(int flags, int *result);
 static int	inotify_add_watch(struct inotify_handle *ih,
 			const char *path, uint32_t pathlen, inotify_flags mask, int *res);
+static void	inotify_insert_child(struct inotify_handle *ih, struct inotify_watch *child);
+static struct inotify_watch*  inotify_insert_child_watch(struct inotify_watch *parent,
+		const char *path, uint32_t pathlen);
+
 static void	inotify_delete_watch(struct inotify_watch *iw);
 static void	inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw);
 
@@ -290,9 +294,11 @@ done:
 	return (error);
 }
 
+/* TODO: Allocate memory for path and string at once, and fix ripples */
 static __inline int
 INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd,
 		inotify_flags _mask, struct inotify_watch *_parent,
+		struct inotify_handle *_handle,
 		const char *_path, uint32_t _pathlen)
 {
 	struct inotify_watch *iw = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);
@@ -308,10 +314,64 @@ INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd,
 	iw->childs = -1;
 	iw->iw_qrefs = 0;
 	iw->iw_marks = 0;
+	iw->handle = _handle;
 	strcpy(iw->pathname, _path);
 
 	*_iw = iw;
 	return (0);
+}
+
+static void
+inotify_insert_child(struct inotify_handle *ih, struct inotify_watch *child)
+{
+	TAILQ_INSERT_TAIL(&ih->wlh, child, watchlist);
+	++child->childs;
+	++ih->nchilds;
+	++ih->iuc->ic_watches;
+}
+
+
+static struct inotify_watch*
+inotify_insert_child_watch(struct inotify_watch *parent, const char *path,
+		uint32_t pathlen)
+{
+	struct file *fp;
+	struct inotify_watch *iw = NULL;
+	struct inotify_handle *ih = parent->handle;
+	struct inotify_ucount *iuc = ih->iuc;
+	int wd, error;
+	char npath[MAXPATHLEN];
+
+	if (iuc->ic_watches >= inotify_max_user_watches) {
+		/*error = ENOSPC;*/
+		return (NULL);
+	}
+
+	strcpy(npath, parent->pathname);
+	strcat(npath, "/");
+	strcpy(&npath[pathlen+1], path);
+	error = fp_open(npath, O_RDONLY, 0400, &fp);
+	if (error != 0) {
+		kprintf("inotify_insert_child_watch: Error opening file, old = %s, new = %s! \n", 
+				path, npath);
+		return (NULL);
+	}
+
+	error = inotify_fdalloc(ih->wfdp, 1, &wd);
+	if (error != 0)
+		goto done;
+
+	fsetfd(ih->wfdp, fp, wd);
+	error = INOTIFY_WATCH_INIT(&iw, fp, wd, parent->mask, parent, ih, path, pathlen);
+	if (error != 0)
+		goto done;
+
+	inotify_insert_child(ih, iw);
+	kprintf("child inserted");
+
+done:
+	fdrop(fp);
+	return (iw);
 }
 
 /*TODO: Check user permission to read file */
@@ -350,7 +410,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	if ((st.st_mode & S_IFREG) && (mask & IN_ONLYDIR))
 		goto early_error;
 
-	error = INOTIFY_WATCH_INIT(&iw, fp, wd, mask, NULL, path, pathlen);
+	error = INOTIFY_WATCH_INIT(&iw, fp, wd, mask, NULL, ih, path, pathlen);
 	TAILQ_INIT(&iw->knel);
 	/*kprintf("added name= %s, wd = %d\n", path, wd);*/
 	if (error != 0)
@@ -412,32 +472,28 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				goto in_scan_error;
 			}
 
-			fo_stat(nfp, &st, cred);
-			if (st.st_mode & S_IFDIR) {
-				fp_close(nfp);
-				continue;
-			} else {
-				if (iuc->ic_watches >= inotify_max_user_watches) {
-					error = ENOSPC;
-					goto iwfdp_in_scan_error;
-				}
+			/*fo_stat(nfp, &st, cred);*/
+			/*if (st.st_mode & S_IFDIR) {*/
+				/*fp_close(nfp);*/
+				/*continue;*/
+			/*}*/
 
-				error = inotify_fdalloc(ih->wfdp, 1, &nwd);
-				if (error != 0)
-					goto iwfdp_in_scan_error;
-
-				fsetfd(ih->wfdp, nfp, nwd);
-				error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, subpath, subpathlen);
-				if (error != 0)
-					goto late_in_scan_error;
-
-				TAILQ_INSERT_TAIL(&ih->wlh, siw, watchlist);
-				++iw->childs;
-				++ih->nchilds;
-				++iuc->ic_watches;
-				fdrop(nfp);
-				/*kprintf("Adding => %s, wd = %d\n", direp->d_name, siw->wd);*/
+			if (iuc->ic_watches >= inotify_max_user_watches) {
+				error = ENOSPC;
+				goto iwfdp_in_scan_error;
 			}
+
+			error = inotify_fdalloc(ih->wfdp, 1, &nwd);
+			if (error != 0)
+				goto iwfdp_in_scan_error;
+
+			fsetfd(ih->wfdp, nfp, nwd);
+			error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, ih, subpath, subpathlen);
+			if (error != 0)
+				goto late_in_scan_error;
+
+			inotify_insert_child(ih, siw);
+			fdrop(nfp);
 		}
 		kfree(dbuf, M_INOTIFY);
 	}
@@ -1005,15 +1061,15 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 			result |= IN_MODIFY;
 		} else if (iw->parent == NULL && iw->childs >= 0) {
 			/* directory: file is created, moved in or out */
-			/* TODO: Check if moved in or out! */
+			/* we just ignore it now */
 			result &= ~IN_MODIFY;
-			if ((fflags & NOTE_CREATE) == 0 &&
-					(fflags & ~NOTE_CREATE) != 0 &&
-					(fflags & NOTE_DELETE) == 0 &&
-					(fflags & NOTE_RENAME) == 0) {
-				result |= IN_MOVED_TO;
-				kprintf("inotify: IN_MOVED_TO\n");
-			}
+			/*if ((fflags & NOTE_CREATE) == 0 &&*/
+					/*(fflags & ~NOTE_CREATE) != 0 &&*/
+					/*(fflags & NOTE_DELETE) == 0 &&*/
+					/*(fflags & NOTE_RENAME) == 0) {*/
+				/*[>result |= IN_MOVED_TO;<]*/
+				/*kprintf("inotify: IN_MOVED_TO\n");*/
+			/*}*/
 		} else {
 			kprintf("inotify: NOTE_WRITE for some file in directory.\n");
 			result |= IN_MODIFY;
@@ -1025,7 +1081,6 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	if (fflags & NOTE_CREATE) {
 		result |= IN_CREATE;
 		/* NOTE: NOTE_WRITE also happens */
-		/*kprintf("inotify: created %s\n", (char*)kev->data);*/
 	}
 	if (fflags & NOTE_DELETE) {
 		if (iw->parent == NULL) {
@@ -1105,7 +1160,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 
 		if (rmask & IN_CREATE) {
 			TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
-				if (knep1->hint == NOTE_CREATE) {
+				if (knep1->hint & NOTE_CREATE) {
 					create_name = (char *)knep1->data;
 					create_len = strlen(create_name);
 					iqe = kmalloc((sizeof *iqe)+create_len, M_INOTIFY, M_WAITOK);
@@ -1125,6 +1180,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					iw->iw_marks |= IW_GOT_ONESHOT;
 
 					++total;
+					inotify_insert_child_watch(iw, iqe->name, iqe->namelen);
 					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
 
 					if (rmask & IN_DELETE) {
@@ -1140,6 +1196,10 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 			iqe->namelen = 0;
 			/*rmask &= ~IN_CREATE;*/
+		} else if ((rmask & IN_MOVED_TO) > 0) {
+			/*iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);*/
+			/*iqe->namelen = iqe->namelen;*/
+			rmask &= ~IN_MOVED_TO; /* ignore for now */
 		} else {
 			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 			iqe->namelen = 0;

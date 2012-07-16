@@ -1344,7 +1344,7 @@ knote_data(struct klist *list, int hint, intptr_t data)
 		if (kn->kn_sdata == 0)
 			continue;
 
-		if ((hint & NOTE_CREATE) > 0) {
+		if ((hint & NOTE_CREATE) > 0 || (hint & NOTE_RENAME) > 0) {
 			cnp = (struct componentname *)data;
 			if (kn->kn_kq->kq_state & KQ_DATASYS) {
 				str = cnp->cn_nameptr; /*XXX: hack */

@@ -732,6 +732,9 @@ out1:
 		vn_unlock(vp);
 out2:
 	VN_KNOTE(vp, NOTE_LINK);
+	/* XXX: wrong info when just link count is changed */
+	VN_KNOTE_DATA(tdvp, NOTE_CREATE|NOTE_LINK, (intptr_t)cnp);
+	VN_KNOTE(tdvp, NOTE_CREATE);
 	VN_KNOTE(tdvp, NOTE_WRITE);
 	return (error);
 }
@@ -1430,6 +1433,7 @@ ufs_mkdir(struct vop_old_mkdir_args *ap)
 	
 bad:
 	if (error == 0) {
+		VN_KNOTE_DATA(ap->a_dvp, NOTE_CREATE, (intptr_t)cnp);
 		VN_KNOTE(dvp, NOTE_WRITE | NOTE_LINK);
 		*ap->a_vpp = tvp;
 	} else {
@@ -1565,6 +1569,8 @@ ufs_symlink(struct vop_old_symlink_args *ap)
 	if (error)
 		return (error);
 	VN_KNOTE(ap->a_dvp, NOTE_WRITE);
+	VN_KNOTE_DATA(ap->a_dvp, NOTE_CREATE, (intptr_t)ap->a_cnp);
+	VN_KNOTE(ap->a_dvp, NOTE_CREATE);
 	vp = *vpp;
 	len = strlen(ap->a_target);
 	if (len < vp->v_mount->mnt_maxsymlinklen) {
