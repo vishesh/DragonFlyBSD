@@ -51,7 +51,6 @@
 #include <sys/sysproto.h>
 #include <sys/vnode.h>
 
-/* TODO: Delete pending events when watches are removed */
 /* TODO: Find and replace with inotify_flags */
 
 #define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
@@ -61,7 +60,7 @@ MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
 
 static int	inotify_init(int flags, int *result);
 static int	inotify_add_watch(struct inotify_handle *ih,
-			const char *path, uint32_t pathlen, uint32_t mask, int *res);
+			const char *path, uint32_t pathlen, inotify_flags mask, int *res);
 static void	inotify_delete_watch(struct inotify_watch *iw);
 static void	inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw);
 
@@ -290,7 +289,7 @@ done:
 }
 
 static __inline int
-INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd, uint32_t _mask, 
+INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd, inotify_flags _mask,
 		struct inotify_watch *_parent, const char *_path, uint32_t _pathlen)
 {
 	struct inotify_watch *iw = kmalloc(sizeof(struct inotify_watch), M_INOTIFY, M_WAITOK);
@@ -314,7 +313,8 @@ INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd, uint32
 
 /*TODO: Check user permission to read file */
 static int
-inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen, uint32_t mask, int *res)
+inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
+		inotify_flags mask, int *res)
 {
 	struct thread *td = curthread;
 	struct ucred *cred = td->td_ucred;
@@ -913,7 +913,7 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 {
 	u_int flags = EV_ADD | EV_ENABLE | EV_CLEAR;
 	u_int fflags = NOTE_REVOKE | NOTE_RENAME;
-	uint32_t mask = iw->mask;
+	inotify_flags mask = iw->mask;
 
 	if (mask & IN_OPEN)
 		fflags |= NOTE_OPEN;
