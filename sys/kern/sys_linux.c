@@ -88,6 +88,7 @@ static struct inotify_ucount*	inotify_find_iuc(uid_t id);
 static int	inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events);
 static int	inotify_copyout(void *arg, struct kevent *kevp, int count, int *res);
 static int	inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev);
+static int	inotify_append_path(char *path, int plen, int max, const char *append, int alen);
 
 struct inotify_kevent_copyin_args {
 	struct inotify_handle *handle;
@@ -283,7 +284,7 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 		goto done;
 	}
 
-	error = inotify_add_watch(ih, path, pathlen, args->mask, &res);
+	error = inotify_add_watch(ih, path, pathlen-1, args->mask, &res);
 	if (error != 0) {
 		kprintf("inotify_add_watch syscall: Error adding watch!\n");
 		goto done;
@@ -348,8 +349,7 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path,
 	}
 
 	strcpy(npath, parent->pathname);
-	strcat(npath, "/");
-	strcpy(&npath[pathlen+1], path);
+	inotify_append_path(npath, parent->pathlen, MAXPATHLEN, path, pathlen);
 	error = fp_open(npath, O_RDONLY, 0400, &fp);
 	if (error != 0) {
 		kprintf("inotify_insert_child_watch: Error opening file, old = %s, new = %s! \n", 
@@ -389,7 +389,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	struct stat st;
 	struct dirent *direp;
 	int nfd, nwd, dblen;
-	uint32_t subpathlen;
 	struct nlookupdata nd;
 	char subpath[MAXPATHLEN], *dbuf;
 	u_int dcount = (sizeof(struct dirent) + (MAXPATHLEN+1)) * inotify_max_user_watches;
@@ -448,7 +447,10 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		kern_close(nfd);
 
 		strcpy(subpath, path);
-		strcat(subpath, "/");
+		if (subpath[pathlen-1] != '/') {
+			strcat(subpath, "/");
+			++pathlen;
+		}
 		for (direp = (struct dirent *)dbuf; (char*)direp < dbuf + dblen;
 				direp = _DIRENT_NEXT(direp)) {
 			if ((char *)_DIRENT_NEXT(direp) > dbuf + dblen)
@@ -464,7 +466,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				continue;
 			}
 			strcpy(subpath + pathlen, direp->d_name);
-			subpathlen = pathlen + direp->d_namlen + 1;
 
 			error = fp_open(subpath, O_RDONLY, 0400, &nfp);
 			if (error != 0) {
@@ -488,7 +489,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				goto iwfdp_in_scan_error;
 
 			fsetfd(ih->wfdp, nfp, nwd);
-			error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, ih, subpath, subpathlen);
+			error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, ih, direp->d_name, direp->d_namlen);
 			if (error != 0)
 				goto late_in_scan_error;
 
@@ -748,8 +749,7 @@ inotify_close(struct file *fp)
 	}
 	if (fdp->fd_rdir) {
 		cache_drop(&fdp->fd_nrdir);
-		vrele(fdp->fd_rdir);
-	}
+		vrele(fdp->fd_rdir); }
 	if (fdp->fd_jdir) {
 		cache_drop(&fdp->fd_njdir);
 		vrele(fdp->fd_jdir);
@@ -776,7 +776,7 @@ inotify_find_watchwd(struct inotify_handle *ih, int wd)
 	struct inotify_watch *iw;
 
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
-		if (iw->wd == wd)
+		if (iw->wd == wd && iw->parent != NULL)
 			return iw;
 	}
 	return (NULL);
@@ -789,7 +789,7 @@ inotify_find_watch(struct inotify_handle *ih, const char *path)
 	struct inotify_watch *iw;
 
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
-		if (strcmp(iw->pathname, path) == 0)
+		if (strcmp(iw->pathname, path) == 0 && iw->parent != NULL)
 			return (iw);
 	}
 	return (NULL);
@@ -1139,7 +1139,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 	struct inotify_handle *ih;
 	struct inotify_watch *iw;
 	struct kevent *kev;
-	struct inotify_queue_entry *iqe;
+	struct inotify_queue_entry *iqe = NULL;
 	struct kevent_note_entry *knep1, *knep2;
 	char *create_name;
 	inotify_flags rmask;
@@ -1228,5 +1228,20 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 	ikap->count = 0;
 
 	return (0);
+}
+
+static int
+inotify_append_path(char *path, int plen, int max, const char *append, int alen)
+{
+	if (plen + alen >= max)
+		return -1;
+
+	if (path[plen-2] == '/') {
+		strcat(path, append);
+	} else {
+		strcpy(&path[plen-1], "/");
+		strcpy(&path[plen], append);
+	}
+	return 0;
 }
 
