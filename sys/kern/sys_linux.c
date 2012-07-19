@@ -361,10 +361,11 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		kprintf("inotify_add_watch: Got a directory to add.\n");
 		++iw->childs;
 
-		error = nlookup_init(&nd, path, UIO_SYSSPACE, 0);
+		error = nlookup_init(&nd, path, UIO_SYSSPACE, NLC_FOLLOW);
 		if (error != 0)
 			goto error_and_cleanup;
 
+		/* as get direntries require a fd */
 		error = kern_open(&nd, O_RDONLY, 0400, &nfd);
 		nlookup_done(&nd);
 		if (error != 0)
