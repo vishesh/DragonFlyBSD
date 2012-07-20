@@ -359,7 +359,6 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path,
 
 	strcpy(npath, parent_path);
 	inotify_append_path(npath, parent->pathlen, MAXPATHLEN, path, pathlen);
-	kprintf("Inserting new child %s\n", npath);
 	error = fp_open(npath, O_RDONLY, 0400, &fp);
 	if (error != 0) {
 		kprintf("inotify_insert_child_watch: Error opening file, old = %s, new = %s! \n", 
@@ -655,8 +654,6 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		if (iw->parent == NULL) {
 			eventlen = INOTIFY_EVENT_SIZE;
 			if (iqe->mask & IN_CREATE) {
-				kprintf("name = %s, len = %d\n", iqe->name,
-						iqe->namelen);
 				ie->mask = IN_ISDIR;
 				ie->len = iqe->namelen + 1;
 				eventlen += ie->len;
@@ -675,8 +672,6 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			ie->mask = IN_ISDIR;
 			watch_name = inotify_watch_name(iw);
 			strcpy(ie->name, watch_name);
-			kprintf("Watch name %s, name_len = %d\n", ie->name,
-					ie->len);
 		}
 
 		if (uio->uio_resid < eventlen)
@@ -811,7 +806,6 @@ inotify_find_watch(struct inotify_handle *ih, const char *path)
 {	
 	struct inotify_watch *iw;
 
-	kprintf("Error here at find?\n");
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
 		if (iw->parent != NULL && strcmp(iw->pathname, path) == 0)
 			return (iw);
