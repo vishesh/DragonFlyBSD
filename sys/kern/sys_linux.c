@@ -56,6 +56,9 @@
 
 #define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
 
+#define inotify_watch_name(iw)	(iw)->fp->f_nchandle.ncp->nc_name
+#define inotify_watch_name_len(iw)	(iw)->fp->f_nchandle.ncp->nc_nlen
+
 MALLOC_DECLARE(M_INOTIFY);
 MALLOC_DEFINE(M_INOTIFY, "inotify", "inotify file system monitoring");
 
@@ -310,13 +313,18 @@ INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd,
 	iw->mask = _mask;
 	iw->wd = _wd;
 	iw->parent = _parent;
-	iw->pathname = kmalloc(_pathlen + 1, M_INOTIFY, M_WAITOK);
-	iw->pathlen = _pathlen;
 	iw->childs = -1;
 	iw->iw_qrefs = 0;
 	iw->iw_marks = 0;
 	iw->handle = _handle;
-	strcpy(iw->pathname, _path);
+	if (_path != NULL) {
+		iw->pathname = kmalloc(_pathlen + 1, M_INOTIFY, M_WAITOK);
+		iw->pathlen = _pathlen;
+		strcpy(iw->pathname, _path);
+	} else {
+		iw->pathname = NULL;
+		iw->pathlen = 0;
+	}
 
 	*_iw = iw;
 	return (0);
@@ -342,14 +350,16 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path,
 	struct inotify_ucount *iuc = ih->iuc;
 	int wd, error;
 	char npath[MAXPATHLEN];
+	char *parent_path = inotify_watch_name(parent);
 
 	if (iuc->ic_watches >= inotify_max_user_watches) {
 		/*error = ENOSPC;*/
 		return (NULL);
 	}
 
-	strcpy(npath, parent->pathname);
+	strcpy(npath, parent_path);
 	inotify_append_path(npath, parent->pathlen, MAXPATHLEN, path, pathlen);
+	kprintf("Inserting new child %s\n", npath);
 	error = fp_open(npath, O_RDONLY, 0400, &fp);
 	if (error != 0) {
 		kprintf("inotify_insert_child_watch: Error opening file, old = %s, new = %s! \n", 
@@ -362,12 +372,11 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path,
 		goto done;
 
 	fsetfd(ih->wfdp, fp, wd);
-	error = INOTIFY_WATCH_INIT(&iw, fp, wd, parent->mask, parent, ih, path, pathlen);
+	error = INOTIFY_WATCH_INIT(&iw, fp, wd, parent->mask, parent, ih, NULL, 0);
 	if (error != 0)
 		goto done;
 
 	inotify_insert_child(ih, iw);
-	kprintf("child inserted");
 
 done:
 	fdrop(fp);
@@ -413,7 +422,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 
 	error = INOTIFY_WATCH_INIT(&iw, fp, wd, mask, NULL, ih, path, pathlen);
 	TAILQ_INIT(&iw->knel);
-	/*kprintf("added name= %s, wd = %d\n", path, wd);*/
 	if (error != 0)
 		goto early_error;
 
@@ -471,6 +479,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 					continue;
 				}
 				strcpy(subpath + pathlen, direp->d_name);
+				kprintf("Added %s\n", subpath);
 
 				error = fp_open(subpath, O_RDONLY, 0400, &nfp);
 				if (error != 0) {
@@ -494,7 +503,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 					goto iwfdp_in_scan_error;
 
 				fsetfd(ih->wfdp, nfp, nwd);
-				error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, ih, direp->d_name, direp->d_namlen);
+				error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, ih, NULL, 0);
 				if (error != 0)
 					goto late_in_scan_error;
 
@@ -578,7 +587,8 @@ inotify_delete_watch(struct inotify_watch *iw)
 	}
 	if (iw->iw_qrefs > 0)
 		return;
-	kfree(iw->pathname, M_INOTIFY);
+	if (iw->pathname != NULL)
+		kfree(iw->pathname, M_INOTIFY);
 	kfree(iw, M_INOTIFY);
 }
 
@@ -620,9 +630,10 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	struct inotify_handle *ih;
 	struct inotify_watch *iw;
 	struct inotify_queue_entry *iqe, *iqe_temp;
-	struct inotify_event *ie;
+	struct inotify_event *ie = NULL;
 	int error, res = 0, nevents;
 	int eventlen;
+	char *watch_name;
 
 	ie = kmalloc(INOTIFY_EVENT_SIZE + MAXPATHLEN, M_INOTIFY, M_WAITOK);
 	ih = (struct inotify_handle*)fp->f_data;
@@ -643,10 +654,11 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 
 		if (iw->parent == NULL) {
 			eventlen = INOTIFY_EVENT_SIZE;
-			ie->wd = iw->wd;
 			if (iqe->mask & IN_CREATE) {
+				kprintf("name = %s, len = %d\n", iqe->name,
+						iqe->namelen);
 				ie->mask = IN_ISDIR;
-				ie->len = iqe->namelen;
+				ie->len = iqe->namelen + 1;
 				eventlen += ie->len;
 				strcpy(ie->name, iqe->name);
 
@@ -654,13 +666,17 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 				ie->mask = 0;
 				ie->len = 0;
 			}
+			ie->wd = iw->wd;
 
 		} else {
-			eventlen = INOTIFY_EVENT_SIZE + iw->pathlen;
+			eventlen = INOTIFY_EVENT_SIZE + inotify_watch_name_len(iw) + 1;
+			ie->len = inotify_watch_name_len(iw) + 1;
 			ie->wd = iw->parent->wd;
 			ie->mask = IN_ISDIR;
-			ie->len = iw->pathlen;
-			strcpy(ie->name, iw->pathname);
+			watch_name = inotify_watch_name(iw);
+			strcpy(ie->name, watch_name);
+			kprintf("Watch name %s, name_len = %d\n", ie->name,
+					ie->len);
 		}
 
 		if (uio->uio_resid < eventlen)
@@ -795,8 +811,9 @@ inotify_find_watch(struct inotify_handle *ih, const char *path)
 {	
 	struct inotify_watch *iw;
 
+	kprintf("Error here at find?\n");
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
-		if (strcmp(iw->pathname, path) == 0 && iw->parent != NULL)
+		if (iw->parent != NULL && strcmp(iw->pathname, path) == 0)
 			return (iw);
 	}
 	return (NULL);
@@ -1202,7 +1219,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 				continue;
 			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 			iqe->namelen = 0;
-			/*rmask &= ~IN_CREATE;*/
+			rmask &= ~IN_CREATE;
 		} else if ((rmask & IN_MOVED_TO) > 0) {
 			/*iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);*/
 			/*iqe->namelen = iqe->namelen;*/
