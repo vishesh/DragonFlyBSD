@@ -387,11 +387,13 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	int wd = -1, error;
 
 	struct stat st;
-	struct dirent *direp;
+	struct dirent *direp = NULL;
 	int nfd, nwd, dblen;
 	struct nlookupdata nd;
 	char subpath[MAXPATHLEN], *dbuf;
-	u_int dcount = (sizeof(struct dirent) + (MAXPATHLEN+1)) * inotify_max_user_watches;
+	/*u_int dcount = (sizeof(struct dirent) + (MAXPATHLEN+1)) * inotify_max_user_watches;*/
+	u_int dcount = sizeof(struct dirent) * 10;
+	long basep = 0;
 	
 	error = fp_open(path, O_RDONLY, 0400, &fp);
 	if (error != 0) {
@@ -421,7 +423,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 
 	/* Now check if its a directory and get the entries */
 	if (st.st_mode & S_IFDIR) {
-		kprintf("inotify_add_watch: Got a directory to add.\n");
 		++iw->childs;
 
 		error = nlookup_init(&nd, path, UIO_SYSSPACE, NLC_FOLLOW);
@@ -435,67 +436,73 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 			goto error_and_cleanup;
 
 		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK);
-		/* XXX: make this read after basep, to work with large dirs
-		 * and limited buffer 
-		 */
-		error = kern_getdirentries(nfd, dbuf, dcount, NULL, &dblen, UIO_SYSSPACE);
-		if (error != 0) {
-			kprintf("inotify_add_watch: error retrieving directories\n");
-			kern_close(nfd);
-			goto in_scan_error;
-		}
-		kern_close(nfd);
 
 		strcpy(subpath, path);
 		if (subpath[pathlen-1] != '/') {
 			strcat(subpath, "/");
 			++pathlen;
 		}
-		for (direp = (struct dirent *)dbuf; (char*)direp < dbuf + dblen;
-				direp = _DIRENT_NEXT(direp)) {
-			if ((char *)_DIRENT_NEXT(direp) > dbuf + dblen)
-				break;
-			if (direp->d_namlen > MAXPATHLEN)
-				continue;
 
-			/* now check if given entry is again directory
-			 * and this time we ignore them 
-			 */
-			if (strcmp(direp->d_name, ".") == 0 ||
-					strcmp(direp->d_name, "..") == 0) {
-				continue;
-			}
-			strcpy(subpath + pathlen, direp->d_name);
-
-			error = fp_open(subpath, O_RDONLY, 0400, &nfp);
+		/* XXX: make this read after basep, to work with large dirs
+		 * and limited buffer 
+		 */
+		for (;;) {
+			error = kern_getdirentries(nfd, dbuf, dcount, &basep, &dblen, UIO_SYSSPACE);
 			if (error != 0) {
-				kprintf("inotify_add_watch: Error opening file! \n");
+				kprintf("inotify_add_watch: error retrieving directories\n");
+				kern_close(nfd);
 				goto in_scan_error;
 			}
+			if (dblen == 0)
+				break;
 
-			/*fo_stat(nfp, &st, cred);*/
-			/*if (st.st_mode & S_IFDIR) {*/
-				/*fp_close(nfp);*/
-				/*continue;*/
-			/*}*/
+			for (direp = (struct dirent *)dbuf; (char*)direp < dbuf + dblen;
+					direp = _DIRENT_NEXT(direp)) {
+				if ((char *)_DIRENT_NEXT(direp) > dbuf + dblen)
+					break;
+				if (direp->d_namlen > MAXPATHLEN)
+					continue;
 
-			if (iuc->ic_watches >= inotify_max_user_watches) {
-				error = ENOSPC;
-				goto iwfdp_in_scan_error;
+				/* now check if given entry is again directory
+				 * and this time we ignore them 
+				 */
+				if (strcmp(direp->d_name, ".") == 0 ||
+						strcmp(direp->d_name, "..") == 0) {
+					continue;
+				}
+				strcpy(subpath + pathlen, direp->d_name);
+
+				error = fp_open(subpath, O_RDONLY, 0400, &nfp);
+				if (error != 0) {
+					kprintf("inotify_add_watch: Error opening file! \n");
+					goto in_scan_error;
+				}
+
+				/*fo_stat(nfp, &st, cred);*/
+				/*if (st.st_mode & S_IFDIR) {*/
+					/*fp_close(nfp);*/
+					/*continue;*/
+				/*}*/
+
+				if (iuc->ic_watches >= inotify_max_user_watches) {
+					error = ENOSPC;
+					goto iwfdp_in_scan_error;
+				}
+
+				error = inotify_fdalloc(ih->wfdp, 1, &nwd);
+				if (error != 0)
+					goto iwfdp_in_scan_error;
+
+				fsetfd(ih->wfdp, nfp, nwd);
+				error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, ih, direp->d_name, direp->d_namlen);
+				if (error != 0)
+					goto late_in_scan_error;
+
+				inotify_insert_child(ih, siw);
+				fdrop(nfp);
 			}
-
-			error = inotify_fdalloc(ih->wfdp, 1, &nwd);
-			if (error != 0)
-				goto iwfdp_in_scan_error;
-
-			fsetfd(ih->wfdp, nfp, nwd);
-			error = INOTIFY_WATCH_INIT(&siw, nfp, nwd, mask, iw, ih, direp->d_name, direp->d_namlen);
-			if (error != 0)
-				goto late_in_scan_error;
-
-			inotify_insert_child(ih, siw);
-			fdrop(nfp);
 		}
+		kern_close(nfd);
 		kfree(dbuf, M_INOTIFY);
 	}
 
