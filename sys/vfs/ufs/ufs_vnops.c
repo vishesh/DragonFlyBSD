@@ -1227,6 +1227,7 @@ abortit:
 	}
 
 	VN_KNOTE(fvp, NOTE_RENAME);
+	VN_KNOTE_DATA(fvp, NOTE_RENAME, (intptr_t)ap);
 	vput(fdvp);
 	vput(fvp);
 	vrele(ap->a_fvp);

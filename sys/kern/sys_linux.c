@@ -382,7 +382,6 @@ done:
 	return (iw);
 }
 
-/*TODO: Check user permission to read file */
 static int
 inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		inotify_flags mask, int *res)
@@ -399,7 +398,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	int nfd, nwd, dblen;
 	struct nlookupdata nd;
 	char subpath[MAXPATHLEN], *dbuf;
-	/*u_int dcount = (sizeof(struct dirent) + (MAXPATHLEN+1)) * inotify_max_user_watches;*/
 	u_int dcount = sizeof(struct dirent) * 10;
 	long basep = 0;
 	
@@ -450,9 +448,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 			++pathlen;
 		}
 
-		/* XXX: make this read after basep, to work with large dirs
-		 * and limited buffer 
-		 */
 		for (;;) {
 			error = kern_getdirentries(nfd, dbuf, dcount, &basep, &dblen, UIO_SYSSPACE);
 			if (error != 0) {
@@ -485,12 +480,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 					kprintf("inotify_add_watch: Error opening file! \n");
 					goto in_scan_error;
 				}
-
-				/*fo_stat(nfp, &st, cred);*/
-				/*if (st.st_mode & S_IFDIR) {*/
-					/*fp_close(nfp);*/
-					/*continue;*/
-				/*}*/
 
 				if (iuc->ic_watches >= inotify_max_user_watches) {
 					error = ENOSPC;

@@ -1344,7 +1344,7 @@ knote_data(struct klist *list, int hint, intptr_t data)
 		if (kn->kn_sdata == 0)
 			continue;
 
-		if ((hint & NOTE_CREATE) > 0 || (hint & NOTE_RENAME) > 0) {
+		if ((hint & NOTE_CREATE) > 0) {
 			cnp = (struct componentname *)data;
 			if (kn->kn_kq->kq_state & KQ_DATASYS) {
 				str = cnp->cn_nameptr; /*XXX: hack */
@@ -1359,6 +1359,13 @@ knote_data(struct klist *list, int hint, intptr_t data)
 				TAILQ_INSERT_TAIL(head, knep, entries);
 			} else if (kn->kn_sdata != 0) {
 				copyout((void *)cnp->cn_nameptr, (void *)kevp->data, cnp->cn_namelen);
+			}
+		} else if ((hint & NOTE_RENAME) > 0) {
+			cnp = (struct componentname *)data;
+			if (kn->kn_kq->kq_state & KQ_DATASYS) {
+				/* */
+			} else if (kn->kn_sdata != 0) {
+				/* */
 			}
 		}
 	}
