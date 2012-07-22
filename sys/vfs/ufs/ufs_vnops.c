@@ -1226,8 +1226,11 @@ abortit:
 		xp->i_flag &= ~IN_RENAME;
 	}
 
+	VN_KNOTE_DATA(fvp, NOTE_RENAME, (intptr_t)fcnp);
 	VN_KNOTE(fvp, NOTE_RENAME);
-	VN_KNOTE_DATA(fvp, NOTE_RENAME, (intptr_t)ap);
+	VN_KNOTE_DATA(tdvp, NOTE_MOVED_TO, (intptr_t)tcnp);
+	VN_KNOTE(tdvp, NOTE_MOVED_TO);
+
 	vput(fdvp);
 	vput(fvp);
 	vrele(ap->a_fvp);

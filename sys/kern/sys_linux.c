@@ -71,6 +71,7 @@ static struct inotify_watch*  inotify_insert_child_watch(struct inotify_watch *p
 
 static void	inotify_delete_watch(struct inotify_watch *iw);
 static void	inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw);
+static void	inotify_remove_child(struct inotify_watch *iw);
 
 static int	inotify_read(struct file *fp, struct uio *uio,
 			struct ucred *cred, int flags);
@@ -325,6 +326,7 @@ INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd,
 		iw->pathname = NULL;
 		iw->pathlen = 0;
 	}
+	TAILQ_INIT(&iw->knel);
 
 	*_iw = iw;
 	return (0);
@@ -418,7 +420,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 		goto early_error;
 
 	error = INOTIFY_WATCH_INIT(&iw, fp, wd, mask, NULL, ih, path, pathlen);
-	TAILQ_INIT(&iw->knel);
 	if (error != 0)
 		goto early_error;
 
@@ -581,6 +582,19 @@ inotify_delete_watch(struct inotify_watch *iw)
 }
 
 static void
+inotify_remove_child(struct inotify_watch *iw)
+{
+	struct inotify_handle *ih = iw->handle;
+
+	knote_fdclose(iw->fp, ih->wfdp, iw->wd);
+	TAILQ_REMOVE(&ih->wlh, iw, watchlist);
+	funsetfd(ih->wfdp, iw->wd);
+	iw->iw_marks |= IW_MARKED_FOR_DELETE;
+	inotify_delete_watch(iw);
+	--iw->parent->childs;
+}
+
+static void
 inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 {
 	struct inotify_watch *w1, *wtemp;
@@ -590,14 +604,8 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	ih->nchilds -= iw->childs + 1;
 	if (iw->childs > 0) {
 		TAILQ_FOREACH_MUTABLE(w1, &ih->wlh, watchlist, wtemp) {
-			if (w1->parent == iw) {
-				knote_fdclose(w1->fp, ih->wfdp, w1->wd);
-				TAILQ_REMOVE(&ih->wlh, w1, watchlist);
-				funsetfd(ih->wfdp, w1->wd);
-				w1->iw_marks |= IW_MARKED_FOR_DELETE;
-				inotify_delete_watch(w1);
-				--iw->childs;
-			}
+			if (w1->parent == iw)
+				inotify_remove_child(w1);
 
 			if (iw->childs == 0)
 				break;
@@ -642,7 +650,8 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 
 		if (iw->parent == NULL) {
 			eventlen = INOTIFY_EVENT_SIZE;
-			if (iqe->mask & IN_CREATE) {
+			if ((iqe->mask & IN_CREATE) > 0 ||
+					(iqe->mask & IN_MOVED_TO) > 0) {
 				ie->mask = IN_ISDIR;
 				ie->len = iqe->namelen + 1;
 				eventlen += ie->len;
@@ -659,8 +668,12 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			ie->len = inotify_watch_name_len(iw) + 1;
 			ie->wd = iw->parent->wd;
 			ie->mask = IN_ISDIR;
-			watch_name = inotify_watch_name(iw);
-			strcpy(ie->name, watch_name);
+			if (iqe->namelen > 0) {
+				strcpy(ie->name, iqe->name);
+			} else {
+				watch_name = inotify_watch_name(iw);
+				strcpy(ie->name, watch_name);
+			}
 		}
 
 		if (uio->uio_resid < eventlen)
@@ -1021,7 +1034,7 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 	if (mask & IN_MOVED_FROM)
 		fflags |= NOTE_RENAME;
 	if (mask & IN_MOVED_TO)
-		fflags |= NOTE_WRITE;
+		fflags |= NOTE_MOVED_TO;
 	if (mask & IN_MOVE_SELF)
 		fflags |= NOTE_RENAME;
 	if (mask & IN_DELETE)
@@ -1034,11 +1047,7 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 		flags |= EV_ONESHOT;
 	}
 
-	if (iw->parent == NULL) {
-		knel_head = (intptr_t)&iw->knel;
-	} else {
-		knel_head = (intptr_t)&iw->parent->knel;
-	}
+	knel_head = (intptr_t)&iw->knel;
 	EV_SET(kev, iw->wd, EVFILT_VNODE, flags, fflags, knel_head, (void*)iw);
 	return (0);
 }
@@ -1099,12 +1108,12 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	if (fflags & NOTE_RENAME) {
 		if (iw->parent == NULL) {
 			result |= IN_MOVE_SELF;
-			/* CHECK: New path? */
 		} else {
-			/* TODO: get the name and change it */
-			kprintf("inotify: renamed parented watch\n");
 			result |= IN_MOVED_FROM;
 		}
+	}
+	if (fflags & NOTE_MOVED_TO) {
+		result |= IN_MOVED_TO;
 	}
 	if (fflags & NOTE_REVOKE) {
 		result |= IN_UNMOUNT; /* or revoked */
@@ -1148,9 +1157,9 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 	struct kevent *kev;
 	struct inotify_queue_entry *iqe = NULL;
 	struct kevent_note_entry *knep1, *knep2;
-	char *create_name;
+	char *file_name;
 	inotify_flags rmask;
-	int i, create_len, total = 0;
+	int i, name_len, total = 0;
 
 	ikap = (struct inotify_kevent_copyin_args *)arg;
 	ih = ikap->handle;
@@ -1168,11 +1177,11 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		if (rmask & IN_CREATE) {
 			TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
 				if (knep1->hint & NOTE_CREATE) {
-					create_name = (char *)knep1->data;
-					create_len = strlen(create_name);
-					iqe = kmalloc((sizeof *iqe)+create_len, M_INOTIFY, M_WAITOK);
-					iqe->namelen = create_len;
-					strcpy(iqe->name, create_name);
+					file_name = (char *)&knep1->data;
+					name_len = strlen(file_name);
+					iqe = kmalloc(sizeof *iqe + name_len + 1, M_INOTIFY, M_WAITOK);
+					iqe->namelen = name_len;
+					strcpy(iqe->name, file_name);
 
 					/* clean the data */
 					TAILQ_REMOVE(&iw->knel, knep1, entries);
@@ -1203,10 +1212,81 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 			iqe->namelen = 0;
 			rmask &= ~IN_CREATE;
+		} else if (rmask & IN_MOVED_FROM) {
+			knep1 = TAILQ_FIRST(&iw->knel);
+			if (knep1->hint & NOTE_RENAME) {
+				file_name = (char *)&knep1->data;
+				name_len = strlen(file_name);
+				iqe = kmalloc(sizeof *iqe + name_len + 1, M_INOTIFY, M_WAITOK);
+				iqe->namelen = name_len;
+				strcpy(iqe->name, file_name);
+
+				/* clean the data */
+				TAILQ_REMOVE(&iw->knel, knep1, entries);
+				kfree(knep1, M_KQUEUE);
+
+				iqe->iw = iw;
+				iqe->mask = IN_MOVED_FROM;
+				++iw->iw_qrefs;
+
+				if (iw->parent != NULL)
+					iw->parent->iw_marks |= IW_GOT_ONESHOT;
+				iw->iw_marks |= IW_GOT_ONESHOT;
+
+				++total;
+				/*inotify_remove_child(iw);*/
+				TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
+
+				if (rmask & IN_DELETE) {
+					iw->iw_marks |= IW_IGNORED;
+				} else if (rmask & IN_DELETE_SELF) {
+					iw->iw_marks |= IW_IGNORED;
+				}
+			}
+
+			if ((rmask & ~IN_MOVED_FROM) == 0)
+				continue;
+			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
+			iqe->namelen = 0;
+			rmask &= ~IN_MOVED_FROM;
 		} else if ((rmask & IN_MOVED_TO) > 0) {
-			/*iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);*/
-			/*iqe->namelen = iqe->namelen;*/
-			rmask &= ~IN_MOVED_TO; /* ignore for now */
+			TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
+				if (knep1->hint & NOTE_MOVED_TO) {
+					file_name = (char *)&knep1->data;
+					name_len = strlen(file_name);
+					iqe = kmalloc(sizeof *iqe + name_len + 1, M_INOTIFY, M_WAITOK);
+					iqe->namelen = name_len;
+					strcpy(iqe->name, file_name);
+
+					/* clean the data */
+					TAILQ_REMOVE(&iw->knel, knep1, entries);
+					kfree(knep1, M_KQUEUE);
+
+					iqe->iw = iw;
+					iqe->mask = IN_MOVED_TO;
+					++iw->iw_qrefs;
+
+					if (iw->parent != NULL)
+						iw->parent->iw_marks |= IW_GOT_ONESHOT;
+					iw->iw_marks |= IW_GOT_ONESHOT;
+
+					++total;
+					inotify_insert_child_watch(iw, iqe->name, iqe->namelen);
+					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
+
+					if (rmask & IN_DELETE) {
+						iw->iw_marks |= IW_IGNORED;
+					} else if (rmask & IN_DELETE_SELF) {
+						iw->iw_marks |= IW_IGNORED;
+					}
+				}
+			}
+
+			if ((rmask & ~IN_MOVED_TO) == 0)
+				continue;
+			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
+			iqe->namelen = 0;
+			rmask &= ~IN_MOVED_TO;
 		} else {
 			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
 			iqe->namelen = 0;
@@ -1243,11 +1323,11 @@ inotify_append_path(char *path, int plen, int max, const char *append, int alen)
 	if (plen + alen >= max)
 		return -1;
 
-	if (path[plen-2] == '/') {
+	if (path[plen] == '/') {
 		strcat(path, append);
 	} else {
-		strcpy(&path[plen-1], "/");
-		strcpy(&path[plen], append);
+		strcpy(&path[plen], "/");
+		strcpy(&path[plen+1], append);
 	}
 	return 0;
 }

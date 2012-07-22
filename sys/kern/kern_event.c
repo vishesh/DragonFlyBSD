@@ -1338,34 +1338,22 @@ knote_data(struct klist *list, int hint, intptr_t data)
 
 	SLIST_FOREACH(kn, list, kn_next) {
 		kevp = &kn->kn_kevent;
-		/*kprintf("kevp->data =  %p, kn->kn_sdata = %p, hint = %d\n",*/
-				/*(void*)kevp->data, (void*)kn->kn_sdata, hint);*/
-
 		if (kn->kn_sdata == 0)
 			continue;
 
-		if ((hint & NOTE_CREATE) > 0) {
+		if ((hint & NOTE_CREATE) > 0 || (hint & NOTE_MOVED_TO) > 0 ||
+				(hint & NOTE_RENAME) > 0) {
 			cnp = (struct componentname *)data;
 			if (kn->kn_kq->kq_state & KQ_DATASYS) {
-				str = cnp->cn_nameptr; /*XXX: hack */
+				str = cnp->cn_nameptr;
 				head = (struct kneh *)kn->kn_sdata;
-				knep = kmalloc(sizeof *knep, M_KQUEUE, M_WAITOK);
+				knep = kmalloc(sizeof *knep + cnp->cn_namelen + 1, M_KQUEUE, M_WAITOK);
 				knep->hint = hint;
-				knep->data = (void *)str;
+				strcpy((char*)&knep->data, cnp->cn_nameptr);
 				kevp->data = kn->kn_sdata;
-				kprintf("inserting => str = %p, data = %p, knep = %p\n",
-						(void*)str, (void*)knep->data,
-						(void*)knep);
 				TAILQ_INSERT_TAIL(head, knep, entries);
 			} else if (kn->kn_sdata != 0) {
 				copyout((void *)cnp->cn_nameptr, (void *)kevp->data, cnp->cn_namelen);
-			}
-		} else if ((hint & NOTE_RENAME) > 0) {
-			cnp = (struct componentname *)data;
-			if (kn->kn_kq->kq_state & KQ_DATASYS) {
-				/* */
-			} else if (kn->kn_sdata != 0) {
-				/* */
 			}
 		}
 	}
