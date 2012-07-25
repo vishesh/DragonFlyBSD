@@ -74,19 +74,21 @@ struct fdnode {
 	char	fileflags;
 	char	unused01;
 	char	unused02;
+	char	reserved;		/* descriptor has been reserved */
+	int	allocated;		/* subtree allocation count */
 };
 
 struct filedesc {
-	struct	idr fd_idr;
+	struct fdnode *fd_files;	/* file structures for open files */
 	struct	vnode *fd_cdir;		/* current directory (phaseout) */
 	struct	vnode *fd_rdir;		/* root directory (phaseout) */
 	struct	vnode *fd_jdir;		/* jail root directory (phaseout) */
 	struct  nchandle fd_ncdir;	/* current directory */
 	struct  nchandle fd_nrdir;	/* root directory */
 	struct  nchandle fd_njdir;	/* jail directory */
-#define fd_nfiles   fd_idr.idr_count	/* number of open files allocated */
-#define	fd_lastfile fd_idr.idr_lastindex    /* high-water mark of fd_files */
-#define	fd_freefile fd_idr.idr_freeinde	    /* approx. next free file */
+	int	fd_nfiles;		/* number of open files allocated */
+	int	fd_lastfile;		/* high-water mark of fd_files */
+	int	fd_freefile;		/* approx. next free file */
 	int	fd_cmask;		/* mask for file creation */
 	int	fd_refcnt;		/* reference count */
 	int	fd_softrefs;		/* softrefs to prevent destruction */
