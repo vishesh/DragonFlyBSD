@@ -33,6 +33,22 @@
  *
  */
 
+/**
+ * IDR is a small Integer ID management library that provides an interface to
+ * map integers with some pointer that can later be retrieved.
+ *
+ * Usage:
+ *
+ * 1. Create a new IDR object and initialize it using idr_init()
+ * 2. Allocate a new integer using idr_alloc(). Do use the spinlock here.
+ * 3. Set it to a pointer using idr_set()
+ * 4. Get the pointer mapped by given integer using idr_get()
+ *
+ * Pointer mapped by integer can't be NULL.
+ *
+ */
+
+
 #ifndef _IDR_H_
 #define _IDR_H_
 
@@ -56,7 +72,7 @@ struct idr {
 };
 
 void	*idr_get(struct idr *idp, int id);
-void	*idr_replace(struct idr *idp, void *ptr, int id);
+void	*idr_replace(struct idr *idp, int id, void *ptr);
 void	*idr_remove(struct idr *idp, int id);
 void	 idr_remove_all(struct idr *idp);
 void	 idr_destroy(struct idr *idp);
@@ -65,7 +81,7 @@ void	 idr_for_each(struct idr *idp, int (*fn)(int id, void *p, void *data), void
 void	 idr_init(struct idr *idp, int size);
 int	 idr_alloc(struct idr *idp, int want, int lim, int *result);
 int	 idr_quick_alloc(struct idr *idp, int *result);
-void	 idr_set(struct idr *idp, void *ptr, int id);
+void	 idr_set(struct idr *idp, int id, void *ptr);
 
 
 #endif /* _KERNEL */

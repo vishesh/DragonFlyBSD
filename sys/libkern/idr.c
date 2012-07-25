@@ -293,7 +293,7 @@ idr_get(struct idr *idp, int id)
 }
 
 void
-idr_set(struct idr *idp, void *ptr, int id)
+idr_set(struct idr *idp, int id, void *ptr)
 {
 	KKASSERT((unsigned)id < idp->idr_count);
 	KKASSERT(idp->idr_nodes[id].reserved != 0);
@@ -319,7 +319,7 @@ idr_for_each(struct idr *idp, int (*fn)(int id, void *p, void *data), void *data
 }
 
 void *
-idr_replace(struct idr *idp, void *ptr, int id)
+idr_replace(struct idr *idp, int id, void *ptr)
 {
 	struct idr_node *idrnp;
 	void *ret;
