@@ -1,3 +1,38 @@
+/*
+ * Copyright (c) 2005-2012 The DragonFly Project.  All rights reserved.
+ *
+ * This code is derived from software contributed to The DragonFly Project
+ * by Jeffrey Hsu.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ * 3. Neither the name of The DragonFly Project nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific, prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ * FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+ * AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+ * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ */
+
 #include <sys/idr.h>
 #include <sys/kernel.h>
 #include <sys/libkern.h>
@@ -5,10 +40,9 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/spinlock2.h>
+#include <sys/limits.h>
 
 MALLOC_DEFINE(M_IDR, "idr", "Integer ID management");
-
-/* TODO: add real checks at place of few asserts */
 
 static void  idr_grow(struct idr *idp, int want);
 static void  idr_reserve(struct idr *idp, int id, int incr);
@@ -40,16 +74,6 @@ left_ancestor(int n)
 	return ((n & (n + 1)) - 1);
 }
 
-static void
-idr_reserve(struct idr *idp, int id, int incr)
-{
-	while (id >= 0) {
-		idp->idr_nodes[id].allocated += incr;
-		KKASSERT(idp->idr_nodes[id].allocated >= 0);
-		id = left_ancestor(id);
-	}
-}
-
 static __inline
 void
 idrfixup(struct idr *idp, int id)
@@ -75,6 +99,22 @@ idr_get_node(struct idr *idp, int id)
 	KKASSERT(idrnp->data != NULL);
 	KKASSERT(idrnp->allocated > 0);
 	return idrnp;
+}
+
+static void
+idr_reserve(struct idr *idp, int id, int incr)
+{
+	while (id >= 0) {
+		idp->idr_nodes[id].allocated += incr;
+		KKASSERT(idp->idr_nodes[id].allocated >= 0);
+		id = left_ancestor(id);
+	}
+}
+
+int
+idr_quick_alloc(struct idr *idp, int *result)
+{
+	return idr_alloc(idp, 0, INT_MAX, result);
 }
 
 int
@@ -228,21 +268,27 @@ idr_remove(struct idr *idp, int id)
 void
 idr_remove_all(struct idr *idp)
 {
+	kfree(idp->idr_nodes, M_IDR);
+	idp->idr_nodes = kmalloc(idp->idr_count * sizeof *idp, M_IDR, M_WAITOK | M_ZERO);
+	idp->idr_lastindex = -1;
+	idp->idr_freeindex = 0;
+	idp->idr_nexpands = 0;
+	spin_init(&idp->idr_spin);
 }
 
 void
 idr_destroy(struct idr *idp)
 {
 	kfree(idp->idr_nodes, M_IDR);
+	memset(idp, 0, sizeof(struct idr));
 }
 
-/* XXX: add checks */
 void *
 idr_get(struct idr *idp, int id)
 {
 	KKASSERT((unsigned)id < idp->idr_count);
 	KKASSERT(idp->idr_nodes[id].allocated > 0);
-	KKASSERT(idp->idr_nodes[id].data == 0);
+	KKASSERT(idp->idr_nodes[id].data == NULL);
 	return idp->idr_nodes[id].data;
 }
 
@@ -261,10 +307,15 @@ idr_set(struct idr *idp, void *ptr, int id)
 	}
 }
 
-int
+void
 idr_for_each(struct idr *idp, int (*fn)(int id, void *p, void *data), void *data)
 {
-	return (0);
+	int i;
+	struct idr_node *nodes = idp->idr_nodes;
+	for (i = 0; i < idp->idr_count; i++) {
+		if (nodes[i].data != NULL && nodes[i].allocated > 0)
+			fn(i, nodes[i].data, data);
+	}
 }
 
 void *
@@ -288,7 +339,7 @@ void
 idr_init(struct idr *idp, int size)
 {
 	memset(idp, 0, sizeof(struct idr));
-	idp->idr_nodes = kmalloc(size * sizeof *idr, M_IDR, M_WAITOK | M_ZERO);
+	idp->idr_nodes = kmalloc(size * sizeof *idp, M_IDR, M_WAITOK | M_ZERO);
 	idp->idr_count = size;
 	idp->idr_lastindex = -1;
 	spin_init(&idp->idr_spin);
