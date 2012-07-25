@@ -174,7 +174,7 @@ retry:
 	 */
 	if (idp->idr_count >= lim) {
 		spin_unlock(&idp->idr_spin);
-		return (EMFILE);
+		return (ENOSPC);
 	}
 	idr_grow(idp, want);
 	goto retry;
@@ -288,7 +288,7 @@ idr_get(struct idr *idp, int id)
 {
 	KKASSERT((unsigned)id < idp->idr_count);
 	KKASSERT(idp->idr_nodes[id].allocated > 0);
-	KKASSERT(idp->idr_nodes[id].data == NULL);
+	KKASSERT(idp->idr_nodes[id].data != NULL);
 	return idp->idr_nodes[id].data;
 }
 
