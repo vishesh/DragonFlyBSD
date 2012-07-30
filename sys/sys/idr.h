@@ -37,14 +37,7 @@
  * IDR is a small Integer ID management library that provides an interface to
  * map integers with some pointer that can later be retrieved.
  *
- * Usage:
- *
- * 1. Create a new IDR object and initialize it using idr_init()
- * 2. Allocate a new integer using idr_alloc(). Do use the spinlock here.
- * 3. Set it to a pointer using idr_set()
- * 4. Get the pointer mapped by given integer using idr_get()
- *
- * Pointer mapped by integer can't be NULL.
+ * NOTE: Pointer mapped by integer can't be NULL.
  *
  */
 
