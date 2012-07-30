@@ -42,10 +42,16 @@
 #include <sys/spinlock2.h>
 #include <sys/limits.h>
 
+#define IDR_DEFAULT_SIZE    32
+
 MALLOC_DEFINE(M_IDR, "idr", "Integer ID management");
 
-static void  idr_grow(struct idr *idp, int want);
-static void  idr_reserve(struct idr *idp, int id, int incr);
+static void	idr_grow(struct idr *idp, int want);
+static void	idr_reserve(struct idr *idp, int id, int incr);
+int		idr_alloc(struct idr *idp, int want, int lim, int *result);
+void		idr_set(struct idr *idp, int id, void *ptr);
+int		idr_find_free(struct idr *idp, int want, int lim);
+int		idr_pre_get1(struct idr *idp, int want, int lim);
 
 /*
  * Number of nodes in right subtree, including the root.
@@ -79,11 +85,11 @@ void
 idrfixup(struct idr *idp, int id)
 {
 	if (id < idp->idr_freeindex) {
-	       idp->idr_freeindex = id;
+		idp->idr_freeindex = id;
 	}
 	while (idp->idr_lastindex >= 0 &&
-	       idp->idr_nodes[idp->idr_lastindex].data == NULL &&
-	       idp->idr_nodes[idp->idr_lastindex].reserved == 0
+		idp->idr_nodes[idp->idr_lastindex].data == NULL &&
+		idp->idr_nodes[idp->idr_lastindex].reserved == 0
 	) {
 		--idp->idr_lastindex;
 	}
@@ -94,11 +100,12 @@ struct idr_node *
 idr_get_node(struct idr *idp, int id)
 {
 	struct idr_node *idrnp;
-	KKASSERT((unsigned)id < idp->idr_count);
+	if (id >= idp->idr_count)
+		return (NULL);
 	idrnp = &idp->idr_nodes[id];
-	KKASSERT(idrnp->data != NULL);
-	KKASSERT(idrnp->allocated > 0);
-	return idrnp;
+	if (idrnp->allocated == 0)
+		return (NULL);
+	return (idrnp);
 }
 
 static void
@@ -112,20 +119,9 @@ idr_reserve(struct idr *idp, int id, int incr)
 }
 
 int
-idr_quick_alloc(struct idr *idp, int *result)
+idr_find_free(struct idr *idp, int want, int lim)
 {
-	return idr_alloc(idp, 0, INT_MAX, result);
-}
-
-int
-idr_alloc(struct idr *idp, int want, int lim, int *result)
-{
-	int id, rsize, rsum, node;
-	
-	spin_lock(&idp->idr_spin);
-	if (want >= idp->idr_count)
-		idr_grow(idp, want);
-
+	int id, rsum, rsize, node;
 	/*
 	 * Search for a free descriptor starting at the higher
 	 * of want or fd_freefile.  If that fails, consider
@@ -138,12 +134,12 @@ idr_alloc(struct idr *idp, int want, int lim, int *result)
 	 * leaf node.  The leaf node will be free but will not necessarily
 	 * have an allocated field of 0.
 	 */
-retry:
+
 	/* move up the tree looking for a subtree with a free node */
 	for (id = max(want, idp->idr_freeindex); id < min(idp->idr_count, lim);
-	     id = right_ancestor(id)) {
+			id = right_ancestor(id)) {
 		if (idp->idr_nodes[id].allocated == 0)
-			goto found;
+			return (id);
 
 		rsize = right_subtree_size(id);
 		if (idp->idr_nodes[id].allocated == rsize)
@@ -162,12 +158,28 @@ retry:
 			if (idp->idr_nodes[id].allocated == rsum + rsize) {
 				id = node;	/* move to the right */
 				if (idp->idr_nodes[node].allocated == 0)
-					goto found;
+					return (id);
 				rsum = 0;
 			}
 		}
-		goto found;
+		return (id);
 	}
+	return (-1);
+}
+
+int
+idr_pre_get1(struct idr *idp, int want, int lim)
+{
+	int id;
+
+	spin_lock(&idp->idr_spin);
+	if (want >= idp->idr_count)
+		idr_grow(idp, want);
+
+retry:
+	id = idr_find_free(idp, want, lim);
+	if (id > -1)
+		goto found;
 
 	/*
 	 * No space in current array.  Expand?
@@ -180,17 +192,64 @@ retry:
 	goto retry;
 
 found:
-	KKASSERT(id < idp->idr_count);
-	if (id > idp->idr_lastindex)
-		idp->idr_lastindex = id;
-	if (want <= idp->idr_freeindex)
-		idp->idr_freeindex = id;
-	*result = id;
-	KKASSERT(idp->idr_nodes[id].data == NULL);
-	KKASSERT(idp->idr_nodes[id].reserved == 0);
-	idp->idr_nodes[id].reserved = 1;
-	idr_reserve(idp, id, 1);
 	spin_unlock(&idp->idr_spin);
+	return (0);
+}
+
+int
+idr_pre_get(struct idr *idp)
+{
+	return idr_pre_get1(idp, idp->idr_maxwant, INT_MAX);
+}
+
+int
+idr_get_new(struct idr *idp, void *ptr, int *id)
+{
+	int resid;
+
+	if (ptr == NULL)
+		return (EINVAL);
+
+	resid = idr_find_free(idp, 0, INT_MAX);
+	if (resid == -1)
+		return (EAGAIN);
+
+	if (resid > idp->idr_lastindex)
+		idp->idr_lastindex = resid;
+	idp->idr_freeindex = resid;
+	*id = resid;
+	KKASSERT(idp->idr_nodes[resid].reserved == 0);
+	idp->idr_nodes[resid].reserved = 1;
+	idr_reserve(idp, resid, 1);
+	idr_set(idp, resid, ptr);
+	return (0);
+}
+
+int
+idr_get_new_above(struct idr *idp, void *ptr, int sid, int *id)
+{
+	int resid;
+	if (sid >= idp->idr_count) {
+		idp->idr_maxwant = max(idp->idr_maxwant, sid);
+		return (EAGAIN);
+	}
+
+	if (ptr == NULL)
+		return (EINVAL);
+
+	resid = idr_find_free(idp, sid, INT_MAX);
+	if (resid == -1)
+		return (EAGAIN);
+
+	if (resid > idp->idr_lastindex)
+		idp->idr_lastindex = resid;
+	if (sid <= idp->idr_freeindex)
+		idp->idr_freeindex = resid;
+	*id = resid;
+	KKASSERT(idp->idr_nodes[resid].reserved == 0);
+	idp->idr_nodes[resid].reserved = 1;
+	idr_reserve(idp, resid, 1);
+	idr_set(idp, resid, ptr);
 	return (0);
 }
 
@@ -248,21 +307,19 @@ idr_grow(struct idr *idp, int want)
 	idp->idr_nexpands++;
 }
 
-void *
+void
 idr_remove(struct idr *idp, int id)
 {	
 	void *ptr;
 
-	if ((unsigned)id >= idp->idr_count)
-		return (NULL);
+	if (id >= idp->idr_count)
+		return;
 	if ((ptr = idp->idr_nodes[id].data) == NULL)
-		return (NULL);
+		return;
 	idp->idr_nodes[id].data = NULL;
 
 	idr_reserve(idp, id, -1);
 	idrfixup(idp, id);
-
-	return (ptr);
 }
 
 void
@@ -273,6 +330,7 @@ idr_remove_all(struct idr *idp)
 	idp->idr_lastindex = -1;
 	idp->idr_freeindex = 0;
 	idp->idr_nexpands = 0;
+	idp->idr_maxwant = 0;
 	spin_init(&idp->idr_spin);
 }
 
@@ -284,10 +342,13 @@ idr_destroy(struct idr *idp)
 }
 
 void *
-idr_get(struct idr *idp, int id)
+idr_find(struct idr *idp, int id)
 {
-	KKASSERT((unsigned)id < idp->idr_count);
-	KKASSERT(idp->idr_nodes[id].allocated > 0);
+	if (id > idp->idr_count) {
+		return (NULL);
+	} else if (idp->idr_nodes[id].allocated == 0) {
+		return (NULL);
+	}
 	KKASSERT(idp->idr_nodes[id].data != NULL);
 	return idp->idr_nodes[id].data;
 }
@@ -295,7 +356,7 @@ idr_get(struct idr *idp, int id)
 void
 idr_set(struct idr *idp, int id, void *ptr)
 {
-	KKASSERT((unsigned)id < idp->idr_count);
+	KKASSERT(id < idp->idr_count);
 	KKASSERT(idp->idr_nodes[id].reserved != 0);
 	if (ptr) {
 		idp->idr_nodes[id].data = ptr;
@@ -307,19 +368,23 @@ idr_set(struct idr *idp, int id, void *ptr)
 	}
 }
 
-void
+int
 idr_for_each(struct idr *idp, int (*fn)(int id, void *p, void *data), void *data)
 {
-	int i;
+	int i, error;
 	struct idr_node *nodes = idp->idr_nodes;
 	for (i = 0; i < idp->idr_count; i++) {
-		if (nodes[i].data != NULL && nodes[i].allocated > 0)
-			fn(i, nodes[i].data, data);
+		if (nodes[i].data != NULL && nodes[i].allocated > 0) {
+			error = fn(i, nodes[i].data, data);
+			if (error != 0)
+				return (error);
+		}
 	}
+	return (0);
 }
 
 void *
-idr_replace(struct idr *idp, int id, void *ptr)
+idr_replace(struct idr *idp, void *ptr, int id)
 {
 	struct idr_node *idrnp;
 	void *ret;
@@ -327,7 +392,7 @@ idr_replace(struct idr *idp, int id, void *ptr)
 	idrnp = idr_get_node(idp, id);
 
 	if (idrnp == NULL || ptr == NULL)
-		return NULL;
+		return (NULL);
 
 	ret = idrnp->data;
 	idrnp->data = ptr;
@@ -336,12 +401,19 @@ idr_replace(struct idr *idp, int id, void *ptr)
 }
 
 void
-idr_init(struct idr *idp, int size)
+idr_init1(struct idr *idp, int size)
 {
 	memset(idp, 0, sizeof(struct idr));
 	idp->idr_nodes = kmalloc(size * sizeof *idp, M_IDR, M_WAITOK | M_ZERO);
 	idp->idr_count = size;
 	idp->idr_lastindex = -1;
+	idp->idr_maxwant = 0;
 	spin_init(&idp->idr_spin);
+}
+
+void
+idr_init(struct idr *idp)
+{
+	idr_init1(idp, IDR_DEFAULT_SIZE);
 }
 

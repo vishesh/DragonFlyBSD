@@ -68,20 +68,22 @@ struct idr {
 	int	    idr_lastindex;
 	int	    idr_freeindex;
 	int	    idr_nexpands;
+	int	    idr_maxwant;
 	struct	    spinlock idr_spin;
 };
 
-void	*idr_get(struct idr *idp, int id);
-void	*idr_replace(struct idr *idp, int id, void *ptr);
-void	*idr_remove(struct idr *idp, int id);
+void	*idr_find(struct idr *idp, int id);
+void	*idr_replace(struct idr *idp, void *ptr, int id);
+void	 idr_remove(struct idr *idp, int id);
 void	 idr_remove_all(struct idr *idp);
 void	 idr_destroy(struct idr *idp);
-void	 idr_for_each(struct idr *idp, int (*fn)(int id, void *p, void *data), void *data);
+int	 idr_for_each(struct idr *idp, int (*fn)(int id, void *p, void *data), void *data);
+int	 idr_get_new(struct idr *idp, void *ptr, int *id);
+int	 idr_get_new_above(struct idr *idp, void *ptr, int sid, int *id);
+int	 idr_pre_get(struct idr *idp);
 
-void	 idr_init(struct idr *idp, int size);
-int	 idr_alloc(struct idr *idp, int want, int lim, int *result);
-int	 idr_quick_alloc(struct idr *idp, int *result);
-void	 idr_set(struct idr *idp, int id, void *ptr);
+void	 idr_init1(struct idr *idp, int size);
+void	 idr_init(struct idr *idp);
 
 
 #endif /* _KERNEL */
