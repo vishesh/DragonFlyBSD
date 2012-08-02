@@ -137,6 +137,9 @@ union _qcvt {
 #define VN_KNOTE_DATA(vp, h, b) \
 	KNOTE_DATA(&vp->v_pollinfo.vpi_kqinfo.ki_note, (h), (b))
 
+#define VN_KNOTE_COOKIE(v1, d1, v2, d2) \
+	KNOTE_COOKIE(&v1->v_pollinfo.vpi_kqinfo.ki_note, (d1), &v2->v_pollinfo.vpi_kqinfo.ki_note, (d2))
+
 #define OFSFMT(vp)		((vp)->v_mount->mnt_maxsymlinklen <= 0)
 
 /*
@@ -1228,8 +1231,7 @@ abortit:
 
 	VN_KNOTE_DATA(fvp, NOTE_RENAME, (intptr_t)fcnp);
 	VN_KNOTE(fvp, NOTE_RENAME);
-	VN_KNOTE_DATA(tdvp, NOTE_MOVED_TO, (intptr_t)tcnp);
-	VN_KNOTE(tdvp, NOTE_MOVED_TO);
+	VN_KNOTE_COOKIE(fvp, (intptr_t)fcnp, tdvp, (intptr_t)tcnp);
 
 	vput(fdvp);
 	vput(fvp);

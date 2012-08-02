@@ -150,6 +150,8 @@ SYSCTL_INT(_kern, OID_AUTO, kq_checkloop, CTLFLAG_RW,
 extern struct filterops aio_filtops;
 extern struct filterops sig_filtops;
 
+static int inotify_cookie = 0;
+
 /*
  * Table for for all system-defined filters.
  */
@@ -1327,6 +1329,59 @@ filter_event(struct knote *kn, long hint)
 }
 
 void
+knote_cookie(struct klist *list1, intptr_t data1, struct klist *list2, intptr_t data2)
+{
+	struct knote *kn;
+	struct kevent *kevp;
+	struct kevent_note_entry *knep;
+	struct componentname *cnp;
+	char *str;
+	int cookie;
+	TAILQ_HEAD(kneh, kevent_note_entry) *head;
+	cookie = ++inotify_cookie;
+
+	cnp = (struct componentname *)data1;
+	SLIST_FOREACH(kn, list1, kn_next) {
+		kevp = &kn->kn_kevent;
+		if (kn->kn_sdata == 0)
+			continue;
+
+		if (kn->kn_kq->kq_state & KQ_DATASYS) {
+			str = cnp->cn_nameptr;
+			head = (struct kneh *)kn->kn_sdata;
+			knep = kmalloc(sizeof *knep + cnp->cn_namelen + 1, M_KQUEUE, M_WAITOK);
+			knep->cookie = cookie;
+			knep->hint = NOTE_MOVED_FROM;
+			strcpy((char*)&knep->data, cnp->cn_nameptr);
+			kevp->data = kn->kn_sdata;
+			TAILQ_INSERT_TAIL(head, knep, entries);
+		} else if (kn->kn_sdata != 0) {
+			copyout((void *)cnp->cn_nameptr, (void *)kevp->data, cnp->cn_namelen);
+		}
+	}
+	knote(list1, NOTE_MOVED_FROM);
+
+	cnp = (struct componentname *)data2;
+	SLIST_FOREACH(kn, list2, kn_next) {
+		kevp = &kn->kn_kevent;
+		if (kn->kn_sdata == 0)
+			continue;
+
+		if (kn->kn_kq->kq_state & KQ_DATASYS) {
+			str = cnp->cn_nameptr;
+			head = (struct kneh *)kn->kn_sdata;
+			knep = kmalloc(sizeof *knep + cnp->cn_namelen + 1, M_KQUEUE, M_WAITOK);
+			knep->cookie = cookie;
+			knep->hint = NOTE_MOVED_TO;
+			strcpy((char*)&knep->data, cnp->cn_nameptr);
+			kevp->data = kn->kn_sdata;
+			TAILQ_INSERT_TAIL(head, knep, entries);
+		}
+	}
+	knote(list2, NOTE_MOVED_TO);
+}
+
+void
 knote_data(struct klist *list, int hint, intptr_t data)
 {
 	struct knote *kn;
@@ -1336,18 +1391,18 @@ knote_data(struct klist *list, int hint, intptr_t data)
 	char *str = 0;
 	TAILQ_HEAD(kneh, kevent_note_entry) *head;
 
+	cnp = (struct componentname *)data;
 	SLIST_FOREACH(kn, list, kn_next) {
 		kevp = &kn->kn_kevent;
 		if (kn->kn_sdata == 0)
 			continue;
 
-		if ((hint & NOTE_CREATE) > 0 || (hint & NOTE_MOVED_TO) > 0 ||
-				(hint & NOTE_RENAME) > 0) {
-			cnp = (struct componentname *)data;
+		if ((hint & NOTE_CREATE) > 0 || (hint & NOTE_MOVED_TO) > 0) {
 			if (kn->kn_kq->kq_state & KQ_DATASYS) {
 				str = cnp->cn_nameptr;
 				head = (struct kneh *)kn->kn_sdata;
 				knep = kmalloc(sizeof *knep + cnp->cn_namelen + 1, M_KQUEUE, M_WAITOK);
+				knep->cookie = 0;
 				knep->hint = hint;
 				strcpy((char*)&knep->data, cnp->cn_nameptr);
 				kevp->data = kn->kn_sdata;

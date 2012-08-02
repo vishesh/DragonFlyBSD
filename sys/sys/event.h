@@ -165,6 +165,7 @@ MALLOC_DECLARE(M_KQUEUE);
 
 #define KNOTE(list, hint)	if ((list) != NULL) knote(list, hint)
 #define KNOTE_DATA(list, hint, data)	if ((list) != NULL) knote_data(list, hint, data)
+#define KNOTE_COOKIE(l1, d1, l2, d2)	if ((l1) != NULL && (l2) != NULL) knote_cookie(l1, d1, l2, d2)
 
 /*
  * Flag indicating hint is a signal.  Used by EVFILT_SIGNAL, and also
@@ -211,6 +212,7 @@ struct knote {
 struct kevent_note_entry {
 	TAILQ_ENTRY(kevent_note_entry) entries;
 	int	 hint;
+	int	 cookie;
 	void	*data;
 };
 
@@ -245,6 +247,7 @@ int kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
 
 extern void	knote(struct klist *list, long hint);
 extern void	knote_data(struct klist *list, int hint, intptr_t data);
+extern void	knote_cookie(struct klist *list1, intptr_t data1, struct klist *list2, intptr_t data2);
 extern void	knote_insert(struct klist *klist, struct knote *kn);
 extern void	knote_remove(struct klist *klist, struct knote *kn);
 /*extern void	knote_empty(struct klist *list);*/

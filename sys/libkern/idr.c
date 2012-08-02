@@ -293,16 +293,19 @@ idr_grow(struct idr *idp, int want)
 	 * and zero the new portion of each array.
 	 */
 	extra = nf - idp->idr_count;
-	bcopy(idp->idr_nodes, newnodes, idp->idr_count * sizeof(struct idr_node));
+	if (idp->idr_nodes != NULL)
+		bcopy(idp->idr_nodes, newnodes, idp->idr_count * sizeof(struct idr_node));
 	bzero(&newnodes[idp->idr_count], extra * sizeof(struct idr_node));
 
 	oldnodes = idp->idr_nodes;
 	idp->idr_nodes = newnodes;
 	idp->idr_count = nf;
 
-	spin_unlock(&idp->idr_spin);
-	kfree(oldnodes, M_IDR);
-	spin_lock(&idp->idr_spin);
+	if (oldnodes != NULL) {
+		spin_unlock(&idp->idr_spin);
+		kfree(oldnodes, M_IDR);
+		spin_lock(&idp->idr_spin);
+	}
 
 	idp->idr_nexpands++;
 }

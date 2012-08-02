@@ -37,6 +37,7 @@
 #include <sys/dirent.h>
 #include <sys/file.h>
 #include <sys/file2.h>
+#include <sys/idr.h>
 #include <sys/kern_syscall.h>
 #include <sys/kernel.h>
 #include <sys/libkern.h>
@@ -680,7 +681,8 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			break;
 
 		ie->mask |= iqe->mask;
-		ie->cookie = 0;
+		ie->cookie = iqe->cookie;
+		kprintf("cookie = %d\n", iqe->cookie);
 
 		if (iw->iw_marks & IW_MARKED_FOR_DELETE ||
 				iw->iw_marks & IW_IGNORED ||
@@ -1032,7 +1034,7 @@ inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev)
 	if (mask & IN_ATTRIB)
 		fflags |= NOTE_ATTRIB;
 	if (mask & IN_MOVED_FROM)
-		fflags |= NOTE_RENAME;
+		fflags |= NOTE_MOVED_FROM;
 	if (mask & IN_MOVED_TO)
 		fflags |= NOTE_MOVED_TO;
 	if (mask & IN_MOVE_SELF)
@@ -1108,9 +1110,10 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	if (fflags & NOTE_RENAME) {
 		if (iw->parent == NULL) {
 			result |= IN_MOVE_SELF;
-		} else {
-			result |= IN_MOVED_FROM;
 		}
+	}
+	if (fflags & NOTE_MOVED_FROM) {
+		result |= IN_MOVED_FROM;
 	}
 	if (fflags & NOTE_MOVED_TO) {
 		result |= IN_MOVED_TO;
@@ -1183,13 +1186,14 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					iqe->namelen = name_len;
 					strcpy(iqe->name, file_name);
 
+					iqe->iw = iw;
+					iqe->mask = IN_CREATE;
+					iqe->cookie = 0;
+					++iw->iw_qrefs;
+
 					/* clean the data */
 					TAILQ_REMOVE(&iw->knel, knep1, entries);
 					kfree(knep1, M_KQUEUE);
-
-					iqe->iw = iw;
-					iqe->mask = IN_CREATE;
-					++iw->iw_qrefs;
 
 					if (iw->parent != NULL)
 						iw->parent->iw_marks |= IW_GOT_ONESHOT;
@@ -1209,47 +1213,48 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 
 			if ((rmask & ~IN_CREATE) == 0)
 				continue;
-			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
-			iqe->namelen = 0;
 			rmask &= ~IN_CREATE;
-		} else if (rmask & IN_MOVED_FROM) {
-			knep1 = TAILQ_FIRST(&iw->knel);
-			if (knep1->hint & NOTE_RENAME) {
-				file_name = (char *)&knep1->data;
-				name_len = strlen(file_name);
-				iqe = kmalloc(sizeof *iqe + name_len + 1, M_INOTIFY, M_WAITOK);
-				iqe->namelen = name_len;
-				strcpy(iqe->name, file_name);
+		}
+		if (rmask & IN_MOVED_FROM) {
+			TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
+				if (knep1->hint & NOTE_MOVED_FROM) {
+					file_name = (char *)&knep1->data;
+					name_len = strlen(file_name);
+					iqe = kmalloc(sizeof *iqe + name_len + 1, M_INOTIFY, M_WAITOK);
+					iqe->namelen = name_len;
+					strcpy(iqe->name, file_name);
 
-				/* clean the data */
-				TAILQ_REMOVE(&iw->knel, knep1, entries);
-				kfree(knep1, M_KQUEUE);
+					iqe->iw = iw;
+					iqe->mask = IN_MOVED_FROM;
+					iqe->cookie = knep1->cookie;
+					++iw->iw_qrefs;
 
-				iqe->iw = iw;
-				iqe->mask = IN_MOVED_FROM;
-				++iw->iw_qrefs;
+					/* clean the data */
+					TAILQ_REMOVE(&iw->knel, knep1, entries);
+					kfree(knep1, M_KQUEUE);
 
-				if (iw->parent != NULL)
-					iw->parent->iw_marks |= IW_GOT_ONESHOT;
-				iw->iw_marks |= IW_GOT_ONESHOT;
 
-				++total;
-				/*inotify_remove_child(iw);*/
-				TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
+					if (iw->parent != NULL)
+						iw->parent->iw_marks |= IW_GOT_ONESHOT;
+					iw->iw_marks |= IW_GOT_ONESHOT;
 
-				if (rmask & IN_DELETE) {
-					iw->iw_marks |= IW_IGNORED;
-				} else if (rmask & IN_DELETE_SELF) {
-					iw->iw_marks |= IW_IGNORED;
+					++total;
+					inotify_insert_child_watch(iw, iqe->name, iqe->namelen);
+					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
+
+					if (rmask & IN_DELETE) {
+						iw->iw_marks |= IW_IGNORED;
+					} else if (rmask & IN_DELETE_SELF) {
+						iw->iw_marks |= IW_IGNORED;
+					}
 				}
 			}
 
 			if ((rmask & ~IN_MOVED_FROM) == 0)
 				continue;
-			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
-			iqe->namelen = 0;
 			rmask &= ~IN_MOVED_FROM;
-		} else if ((rmask & IN_MOVED_TO) > 0) {
+		}
+		if ((rmask & IN_MOVED_TO) > 0) {
 			TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
 				if (knep1->hint & NOTE_MOVED_TO) {
 					file_name = (char *)&knep1->data;
@@ -1258,13 +1263,15 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					iqe->namelen = name_len;
 					strcpy(iqe->name, file_name);
 
+					iqe->iw = iw;
+					iqe->mask = IN_MOVED_TO;
+					iqe->cookie = knep1->cookie;
+					++iw->iw_qrefs;
+
 					/* clean the data */
 					TAILQ_REMOVE(&iw->knel, knep1, entries);
 					kfree(knep1, M_KQUEUE);
 
-					iqe->iw = iw;
-					iqe->mask = IN_MOVED_TO;
-					++iw->iw_qrefs;
 
 					if (iw->parent != NULL)
 						iw->parent->iw_marks |= IW_GOT_ONESHOT;
@@ -1284,16 +1291,15 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 
 			if ((rmask & ~IN_MOVED_TO) == 0)
 				continue;
-			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
-			iqe->namelen = 0;
 			rmask &= ~IN_MOVED_TO;
-		} else {
-			iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
-			iqe->namelen = 0;
 		}
+
+		iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
+		iqe->namelen = 0;
 
 		iqe->iw = iw;
 		iqe->mask = rmask;
+		iqe->cookie = 0;
 		++iw->iw_qrefs;
 
 		if (iw->parent != NULL)
