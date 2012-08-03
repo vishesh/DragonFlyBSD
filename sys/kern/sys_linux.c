@@ -93,7 +93,7 @@ static struct inotify_ucount*	inotify_find_iuc(uid_t id);
 static int	inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events);
 static int	inotify_copyout(void *arg, struct kevent *kevp, int count, int *res);
 static int	inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev);
-static int	inotify_append_path(char *path, const char *append);
+/*static int	inotify_append_path(char *path, const char *append);*/
 
 struct inotify_kevent_copyin_args {
 	struct inotify_handle *handle;
@@ -121,6 +121,46 @@ static uint inotify_max_user_watches;
 static uint inotify_max_queued_events;
 
 SLIST_HEAD(, inotify_ucount) iuc_head = SLIST_HEAD_INITIALIZER(iuc_head);
+
+static int
+fp_open_at(const char *path, int flags, int mode, struct file *rfp,
+		struct file **fpp)
+{
+	struct thread *td = curthread;
+	struct file *fp;
+	struct nlookupdata nd;
+	int error;
+
+	if ((error = falloc(NULL, fpp, NULL)) != 0)
+		return (error);
+	fp = *fpp;
+	if (td->td_proc) {
+		if ((flags & O_ROOTCRED) == 0)
+			fsetcred(fp, td->td_proc->p_ucred);
+	}
+
+	if  ((error = nlookup_init(&nd, path, UIO_SYSSPACE, NLC_LOCKVP)) != 0)
+		goto done;
+
+	if (nd.nl_path[0] != '/') {
+		cache_drop(&nd.nl_nch);
+		cache_copy(&rfp->f_nchandle, &nd.nl_nch);
+	}
+
+	flags = FFLAGS(flags);
+	if (error == 0)
+		error = vn_open(&nd, fp, flags, mode);
+
+	nlookup_done(&nd);
+
+done:
+	if (error) {
+		fdrop(fp);
+		*fpp = NULL;
+	}
+
+	return (error);
+}
 
 static void
 inotify_sysinit(void *args)
@@ -351,20 +391,16 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path)
 	struct inotify_handle *ih = parent->handle;
 	struct inotify_ucount *iuc = ih->iuc;
 	int wd, error;
-	char npath[MAXPATHLEN];
-	char *parent_path = inotify_watch_name(parent);
 
 	if (iuc->ic_watches >= inotify_max_user_watches) {
 		/*error = ENOSPC;*/
 		return (NULL);
 	}
 
-	strcpy(npath, parent_path);
-	inotify_append_path(npath, path);
-	error = fp_open(npath, O_RDONLY, 0400, &fp);
+	error = fp_open_at(path, O_RDONLY, 0400, parent->fp, &fp);
 	if (error != 0) {
-		kprintf("inotify_insert_child_watch: Error opening file, old = %s, new = %s! \n", 
-				path, npath);
+		kprintf("inotify_insert_child_watch: Error opening file, old = %s! \n", 
+				path);
 		return (NULL);
 	}
 
@@ -399,7 +435,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	struct dirent *direp = NULL;
 	int nfd, nwd, dblen;
 	struct nlookupdata nd;
-	char subpath[MAXPATHLEN], *dbuf;
+	char *dbuf;
 	u_int dcount = sizeof(struct dirent) * 10;
 	long basep = 0;
 	
@@ -443,12 +479,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 
 		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK);
 
-		strcpy(subpath, path);
-		if (subpath[pathlen-1] != '/') {
-			strcat(subpath, "/");
-			++pathlen;
-		}
-
 		for (;;) {
 			error = kern_getdirentries(nfd, dbuf, dcount, &basep, &dblen, UIO_SYSSPACE);
 			if (error != 0) {
@@ -473,14 +503,13 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 						strcmp(direp->d_name, "..") == 0) {
 					continue;
 				}
-				strcpy(subpath + pathlen, direp->d_name);
-				kprintf("Added %s\n", subpath);
 
-				error = fp_open(subpath, O_RDONLY, 0400, &nfp);
+				error = fp_open_at(direp->d_name, O_RDONLY, 0400, fp, &nfp);
 				if (error != 0) {
 					kprintf("inotify_add_watch: Error opening file! \n");
 					goto in_scan_error;
 				}
+				kprintf("Added %s\n", direp->d_name);
 
 				if (iuc->ic_watches >= inotify_max_user_watches) {
 					error = ENOSPC;
@@ -1230,7 +1259,6 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					iw->iw_marks |= IW_GOT_ONESHOT;
 
 					++total;
-					/*inotify_insert_child_watch(iw, iqe->name, iqe->namelen);*/
 					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
 
 					if (rmask & IN_DELETE) {
@@ -1314,17 +1342,17 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 	return (0);
 }
 
-static int
-inotify_append_path(char *path, const char *append)
-{
-	int plen = strlen(path);
+/*static int*/
+/*inotify_append_path(char *path, const char *append)*/
+/*{*/
+	/*int plen = strlen(path);*/
 
-	if (path[plen-1] == '/') {
-		strcat(path, append);
-	} else {
-		strcat(path, "/");
-		strcat(path, append);
-	}
-	return 0;
-}
+	/*if (path[plen-1] == '/') {*/
+		/*strcat(path, append);*/
+	/*} else {*/
+		/*strcat(path, "/");*/
+		/*strcat(path, append);*/
+	/*}*/
+	/*return 0;*/
+/*}*/
 
