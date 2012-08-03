@@ -42,6 +42,7 @@
 #include <sys/protosw.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
+#include <sys/spinlock2.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/sysproto.h>
@@ -151,6 +152,8 @@ extern struct filterops aio_filtops;
 extern struct filterops sig_filtops;
 
 static int inotify_cookie = 0;
+static struct spinlock inotify_cookie_lock
+		= SPINLOCK_INITIALIZER(inotify_cookie_lock);
 
 /*
  * Table for for all system-defined filters.
@@ -1338,7 +1341,9 @@ knote_cookie(struct klist *list1, intptr_t data1, struct klist *list2, intptr_t 
 	char *str;
 	int cookie;
 	TAILQ_HEAD(kneh, kevent_note_entry) *head;
+	spin_lock(&inotify_cookie_lock);
 	cookie = ++inotify_cookie;
+	spin_unlock(&inotify_cookie_lock);
 
 	cnp = (struct componentname *)data1;
 	SLIST_FOREACH(kn, list1, kn_next) {
