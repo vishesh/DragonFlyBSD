@@ -68,7 +68,7 @@ static int	inotify_add_watch(struct inotify_handle *ih,
 			const char *path, uint32_t pathlen, inotify_flags mask, int *res);
 static void	inotify_insert_child(struct inotify_handle *ih, struct inotify_watch *child);
 static struct inotify_watch*  inotify_insert_child_watch(struct inotify_watch *parent,
-		const char *path, uint32_t pathlen);
+		const char *path);
 
 static void	inotify_delete_watch(struct inotify_watch *iw);
 static void	inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw);
@@ -93,7 +93,7 @@ static struct inotify_ucount*	inotify_find_iuc(uid_t id);
 static int	inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events);
 static int	inotify_copyout(void *arg, struct kevent *kevp, int count, int *res);
 static int	inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev);
-static int	inotify_append_path(char *path, int plen, int max, const char *append, int alen);
+static int	inotify_append_path(char *path, const char *append);
 
 struct inotify_kevent_copyin_args {
 	struct inotify_handle *handle;
@@ -344,8 +344,7 @@ inotify_insert_child(struct inotify_handle *ih, struct inotify_watch *child)
 
 
 static struct inotify_watch*
-inotify_insert_child_watch(struct inotify_watch *parent, const char *path,
-		uint32_t pathlen)
+inotify_insert_child_watch(struct inotify_watch *parent, const char *path)
 {
 	struct file *fp;
 	struct inotify_watch *iw = NULL;
@@ -361,7 +360,7 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path,
 	}
 
 	strcpy(npath, parent_path);
-	inotify_append_path(npath, parent->pathlen, MAXPATHLEN, path, pathlen);
+	inotify_append_path(npath, path);
 	error = fp_open(npath, O_RDONLY, 0400, &fp);
 	if (error != 0) {
 		kprintf("inotify_insert_child_watch: Error opening file, old = %s, new = %s! \n", 
@@ -682,7 +681,6 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 
 		ie->mask |= iqe->mask;
 		ie->cookie = iqe->cookie;
-		kprintf("cookie = %d\n", iqe->cookie);
 
 		if (iw->iw_marks & IW_MARKED_FOR_DELETE ||
 				iw->iw_marks & IW_IGNORED ||
@@ -1081,13 +1079,6 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 			/* directory: file is created, moved in or out */
 			/* we just ignore it now */
 			result &= ~IN_MODIFY;
-			/*if ((fflags & NOTE_CREATE) == 0 &&*/
-					/*(fflags & ~NOTE_CREATE) != 0 &&*/
-					/*(fflags & NOTE_DELETE) == 0 &&*/
-					/*(fflags & NOTE_RENAME) == 0) {*/
-				/*[>result |= IN_MOVED_TO;<]*/
-				/*kprintf("inotify: IN_MOVED_TO\n");*/
-			/*}*/
 		} else {
 			kprintf("inotify: NOTE_WRITE for some file in directory.\n");
 			result |= IN_MODIFY;
@@ -1200,7 +1191,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					iw->iw_marks |= IW_GOT_ONESHOT;
 
 					++total;
-					inotify_insert_child_watch(iw, iqe->name, iqe->namelen);
+					inotify_insert_child_watch(iw, iqe->name);
 					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
 
 					if (rmask & IN_DELETE) {
@@ -1239,7 +1230,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					iw->iw_marks |= IW_GOT_ONESHOT;
 
 					++total;
-					inotify_insert_child_watch(iw, iqe->name, iqe->namelen);
+					/*inotify_insert_child_watch(iw, iqe->name, iqe->namelen);*/
 					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
 
 					if (rmask & IN_DELETE) {
@@ -1278,7 +1269,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					iw->iw_marks |= IW_GOT_ONESHOT;
 
 					++total;
-					inotify_insert_child_watch(iw, iqe->name, iqe->namelen);
+					inotify_insert_child_watch(iw, iqe->name);
 					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
 
 					if (rmask & IN_DELETE) {
@@ -1324,16 +1315,15 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 }
 
 static int
-inotify_append_path(char *path, int plen, int max, const char *append, int alen)
+inotify_append_path(char *path, const char *append)
 {
-	if (plen + alen >= max)
-		return -1;
+	int plen = strlen(path);
 
-	if (path[plen] == '/') {
+	if (path[plen-1] == '/') {
 		strcat(path, append);
 	} else {
-		strcpy(&path[plen], "/");
-		strcpy(&path[plen+1], append);
+		strcat(path, "/");
+		strcat(path, append);
 	}
 	return 0;
 }
