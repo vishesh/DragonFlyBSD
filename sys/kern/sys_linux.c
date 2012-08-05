@@ -93,7 +93,6 @@ static struct inotify_ucount*	inotify_find_iuc(uid_t id);
 static int	inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events);
 static int	inotify_copyout(void *arg, struct kevent *kevp, int count, int *res);
 static int	inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev);
-/*static int	inotify_append_path(char *path, const char *append);*/
 
 struct inotify_kevent_copyin_args {
 	struct inotify_handle *handle;
@@ -1341,18 +1340,4 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 
 	return (0);
 }
-
-/*static int*/
-/*inotify_append_path(char *path, const char *append)*/
-/*{*/
-	/*int plen = strlen(path);*/
-
-	/*if (path[plen-1] == '/') {*/
-		/*strcat(path, append);*/
-	/*} else {*/
-		/*strcat(path, "/");*/
-		/*strcat(path, append);*/
-	/*}*/
-	/*return 0;*/
-/*}*/
 
