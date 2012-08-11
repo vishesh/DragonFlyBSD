@@ -37,7 +37,7 @@
 #include <sys/dirent.h>
 #include <sys/file.h>
 #include <sys/file2.h>
-#include <sys/idr.h>
+/*#include <sys/idr.h>*/
 #include <sys/kern_syscall.h>
 #include <sys/kernel.h>
 #include <sys/libkern.h>
@@ -54,6 +54,8 @@
 #include <sys/vnode.h>
 
 /* TODO: Find and replace with inotify_flags */
+/* TODO: IN_IGNORED */
+/* TODO: IN_ISDIR */
 
 #define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
 
@@ -93,6 +95,7 @@ static struct inotify_ucount*	inotify_find_iuc(uid_t id);
 static int	inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events);
 static int	inotify_copyout(void *arg, struct kevent *kevp, int count, int *res);
 static int	inotify_to_kevent(struct inotify_watch *iw, struct kevent *kev);
+static void	inotify_queue_event(struct inotify_watch *iw, inotify_flags mask, inotify_flags hint, const char *filename, int cookie);
 
 struct inotify_kevent_copyin_args {
 	struct inotify_handle *handle;
@@ -392,7 +395,7 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path)
 	int wd, error;
 
 	if (iuc->ic_watches >= inotify_max_user_watches) {
-		/*error = ENOSPC;*/
+		/* error = ENOSPC; */
 		return (NULL);
 	}
 
@@ -1170,6 +1173,67 @@ inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 	return (0);
 }
 
+static void
+inotify_queue_event(struct inotify_watch *iw, inotify_flags mask, inotify_flags hint, const char *filename, int cookie)
+{
+	struct inotify_queue_entry *iqe;
+	struct inotify_handle *ih = iw->handle;
+	int namelen = 0;
+
+	if ((iw->mask & IN_ONESHOT) && ((iw->iw_marks & IW_GOT_ONESHOT)
+		|| (iw->parent != NULL && iw->parent->iw_marks & IW_GOT_ONESHOT))) {
+		return;
+	} else if ((mask & hint) == 0) {
+		return;
+	}
+
+	if (filename != NULL)
+		namelen = strlen(filename) + 1;
+
+	iqe = kmalloc(sizeof *iqe + namelen, M_INOTIFY, M_WAITOK);
+	iqe->namelen = namelen;
+	if (namelen > 0)
+		strcpy(iqe->name, filename);
+
+	iqe->iw = iw;
+	iqe->mask = hint;
+	iqe->cookie = cookie;
+	++iw->iw_qrefs;
+
+	if (iw->parent != NULL)
+		iw->parent->iw_marks |= IW_GOT_ONESHOT;
+	iw->iw_marks |= IW_GOT_ONESHOT;
+
+	TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
+	++ih->queue_size;
+}
+
+static __inline void
+inotify_ikap_events(struct inotify_watch *iw, int khint, int inmask,
+		struct inotify_kevent_copyin_args *ikap)
+{
+	struct kevent_note_entry *knep1, *knep2;
+	char *fname;
+
+	TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
+		if (knep1->hint & khint) {
+			fname = (char *)&knep1->data;
+			inotify_queue_event(iw, inmask, inmask, fname, knep1->cookie);
+			if (khint == NOTE_CREATE) {
+				inotify_insert_child_watch(iw, fname);
+			} else if (khint == NOTE_MOVED_TO) {
+				inotify_insert_child_watch(iw, fname);
+			} else if (khint == NOTE_MOVED_FROM) {
+				/* TODO: remove the watch */
+			}
+			/* clean the data */
+			TAILQ_REMOVE(&iw->knel, knep1, entries);
+			kfree(knep1, M_KQUEUE);
+
+		}
+	}
+}
+
 static int
 inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 {
@@ -1177,11 +1241,8 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 	struct inotify_handle *ih;
 	struct inotify_watch *iw;
 	struct kevent *kev;
-	struct inotify_queue_entry *iqe = NULL;
-	struct kevent_note_entry *knep1, *knep2;
-	char *file_name;
 	inotify_flags rmask;
-	int i, name_len, total = 0;
+	int i;
 
 	ikap = (struct inotify_kevent_copyin_args *)arg;
 	ih = ikap->handle;
@@ -1191,151 +1252,26 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		iw = (struct inotify_watch *)kev->udata;
 		inotify_from_kevent(kev, &rmask);
 
-		if ((iw->mask & IN_ONESHOT) && ((iw->iw_marks & IW_GOT_ONESHOT)
-			|| (iw->parent != NULL && iw->parent->iw_marks & IW_GOT_ONESHOT))) {
-			continue;
-		}
+		if (rmask & IN_CREATE)
+			inotify_ikap_events(iw, NOTE_CREATE, IN_CREATE, ikap);
+		if (rmask & IN_MOVED_FROM)
+			inotify_ikap_events(iw, NOTE_MOVED_FROM, IN_MOVED_FROM, ikap);
+		if (rmask & IN_MOVED_TO)
+			inotify_ikap_events(iw, NOTE_MOVED_TO, IN_MOVED_TO, ikap);
 
-		if (rmask & IN_CREATE) {
-			TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
-				if (knep1->hint & NOTE_CREATE) {
-					file_name = (char *)&knep1->data;
-					name_len = strlen(file_name);
-					iqe = kmalloc(sizeof *iqe + name_len + 1, M_INOTIFY, M_WAITOK);
-					iqe->namelen = name_len;
-					strcpy(iqe->name, file_name);
-
-					iqe->iw = iw;
-					iqe->mask = IN_CREATE;
-					iqe->cookie = 0;
-					++iw->iw_qrefs;
-
-					/* clean the data */
-					TAILQ_REMOVE(&iw->knel, knep1, entries);
-					kfree(knep1, M_KQUEUE);
-
-					if (iw->parent != NULL)
-						iw->parent->iw_marks |= IW_GOT_ONESHOT;
-					iw->iw_marks |= IW_GOT_ONESHOT;
-
-					++total;
-					inotify_insert_child_watch(iw, iqe->name);
-					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
-
-					if (rmask & IN_DELETE) {
-						iw->iw_marks |= IW_IGNORED;
-					} else if (rmask & IN_DELETE_SELF) {
-						iw->iw_marks |= IW_IGNORED;
-					}
-				}
-			}
-
-			if ((rmask & ~IN_CREATE) == 0)
-				continue;
-			rmask &= ~IN_CREATE;
-		}
-		if (rmask & IN_MOVED_FROM) {
-			TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
-				if (knep1->hint & NOTE_MOVED_FROM) {
-					file_name = (char *)&knep1->data;
-					name_len = strlen(file_name);
-					iqe = kmalloc(sizeof *iqe + name_len + 1, M_INOTIFY, M_WAITOK);
-					iqe->namelen = name_len;
-					strcpy(iqe->name, file_name);
-
-					iqe->iw = iw;
-					iqe->mask = IN_MOVED_FROM;
-					iqe->cookie = knep1->cookie;
-					++iw->iw_qrefs;
-
-					/* clean the data */
-					TAILQ_REMOVE(&iw->knel, knep1, entries);
-					kfree(knep1, M_KQUEUE);
-
-
-					if (iw->parent != NULL)
-						iw->parent->iw_marks |= IW_GOT_ONESHOT;
-					iw->iw_marks |= IW_GOT_ONESHOT;
-
-					++total;
-					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
-
-					if (rmask & IN_DELETE) {
-						iw->iw_marks |= IW_IGNORED;
-					} else if (rmask & IN_DELETE_SELF) {
-						iw->iw_marks |= IW_IGNORED;
-					}
-				}
-			}
-
-			if ((rmask & ~IN_MOVED_FROM) == 0)
-				continue;
-			rmask &= ~IN_MOVED_FROM;
-		}
-		if ((rmask & IN_MOVED_TO) > 0) {
-			TAILQ_FOREACH_MUTABLE(knep1, &iw->knel, entries, knep2) {
-				if (knep1->hint & NOTE_MOVED_TO) {
-					file_name = (char *)&knep1->data;
-					name_len = strlen(file_name);
-					iqe = kmalloc(sizeof *iqe + name_len + 1, M_INOTIFY, M_WAITOK);
-					iqe->namelen = name_len;
-					strcpy(iqe->name, file_name);
-
-					iqe->iw = iw;
-					iqe->mask = IN_MOVED_TO;
-					iqe->cookie = knep1->cookie;
-					++iw->iw_qrefs;
-
-					/* clean the data */
-					TAILQ_REMOVE(&iw->knel, knep1, entries);
-					kfree(knep1, M_KQUEUE);
-
-
-					if (iw->parent != NULL)
-						iw->parent->iw_marks |= IW_GOT_ONESHOT;
-					iw->iw_marks |= IW_GOT_ONESHOT;
-
-					++total;
-					inotify_insert_child_watch(iw, iqe->name);
-					TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
-
-					if (rmask & IN_DELETE) {
-						iw->iw_marks |= IW_IGNORED;
-					} else if (rmask & IN_DELETE_SELF) {
-						iw->iw_marks |= IW_IGNORED;
-					}
-				}
-			}
-
-			if ((rmask & ~IN_MOVED_TO) == 0)
-				continue;
-			rmask &= ~IN_MOVED_TO;
-		}
-
-		iqe = kmalloc(sizeof *iqe, M_INOTIFY, M_WAITOK);
-		iqe->namelen = 0;
-
-		iqe->iw = iw;
-		iqe->mask = rmask;
-		iqe->cookie = 0;
-		++iw->iw_qrefs;
-
-		if (iw->parent != NULL)
-			iw->parent->iw_marks |= IW_GOT_ONESHOT;
-		iw->iw_marks |= IW_GOT_ONESHOT;
-
-		++total;
-		TAILQ_INSERT_TAIL(&ih->eventq, iqe, entries);
-
-		if (rmask & IN_DELETE) {
-			iw->iw_marks |= IW_IGNORED;
-		} else if (rmask & IN_DELETE_SELF) {
-			iw->iw_marks |= IW_IGNORED;
-		}
+		inotify_queue_event(iw, rmask, IN_OPEN, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_ACCESS, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_MODIFY, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_ATTRIB, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_MOVE_SELF, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_CLOSE_WRITE, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_CLOSE_NOWRITE, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_DELETE, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_DELETE_SELF, NULL, 0);
+		inotify_queue_event(iw, rmask, IN_UNMOUNT, NULL, 0);
 	}
 
 	*res += count;
-	ih->queue_size += total;
 	ikap->count = 0;
 
 	return (0);
