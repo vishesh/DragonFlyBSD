@@ -617,12 +617,11 @@ inotify_remove_child(struct inotify_watch *iw)
 {
 	struct inotify_handle *ih = iw->handle;
 
-	knote_fdclose(iw->fp, ih->wfdp, iw->wd);
 	TAILQ_REMOVE(&ih->wlh, iw, watchlist);
 	funsetfd(ih->wfdp, iw->wd);
 	iw->iw_marks |= IW_MARKED_FOR_DELETE;
-	inotify_delete_watch(iw);
 	--iw->parent->childs;
+	inotify_delete_watch(iw);
 }
 
 static void
@@ -635,8 +634,10 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	ih->nchilds -= iw->childs + 1;
 	if (iw->childs > 0) {
 		TAILQ_FOREACH_MUTABLE(w1, &ih->wlh, watchlist, wtemp) {
-			if (w1->parent == iw)
+			if (w1->parent == iw) {
+				knote_fdclose(w1->fp, ih->wfdp, w1->wd);
 				inotify_remove_child(w1);
+			}
 
 			if (iw->childs == 0)
 				break;
@@ -719,10 +720,10 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			break;
 		}
 		
-		TAILQ_REMOVE(&ih->eventq, iqe, entries);
-		kfree(iqe, M_INOTIFY);
 		--ih->queue_size;
 		--iw->iw_qrefs;
+		TAILQ_REMOVE(&ih->eventq, iqe, entries);
+		kfree(iqe, M_INOTIFY);
 
 		if (iw->mask & IN_ONESHOT) {
 			if (iw->parent == NULL) {
@@ -731,7 +732,9 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 				inotify_rm_watch(ih, iw->parent);
 			}
 		} else  if ((iw->iw_marks & IW_MARKED_FOR_DELETE) > 0 && iw->iw_qrefs < 1) {
-				inotify_delete_watch(iw);
+			inotify_delete_watch(iw);
+		} else if ((iw->iw_marks & IW_WATCH_DELETE) && iw->iw_qrefs < 1) {
+			inotify_remove_child(iw);
 		}
 	}
 
@@ -1117,6 +1120,12 @@ inotify_from_kevent(struct kevent *kev, inotify_flags *flag)
 	if (fflags & NOTE_RENAME) {
 		if (iw->parent == NULL) {
 			result |= IN_MOVE_SELF;
+		} else {
+			/* IN_MOVED_FROM case, since we have no direct way to
+			 * know for which what that event was triggered.
+			 */
+			knote_fdclose(iw->fp, iw->handle->wfdp, iw->wd);
+			iw->iw_marks |= IW_WATCH_DELETE;
 		}
 	}
 	if (fflags & NOTE_MOVED_FROM) {
@@ -1208,13 +1217,10 @@ inotify_ikap_events(struct inotify_watch *iw, int khint, int inmask,
 				inotify_insert_child_watch(iw, fname);
 			} else if (khint == NOTE_MOVED_TO) {
 				inotify_insert_child_watch(iw, fname);
-			} else if (khint == NOTE_MOVED_FROM) {
-				/* TODO: remove the watch */
 			}
 			/* clean the data */
 			TAILQ_REMOVE(&iw->knel, knep1, entries);
 			kfree(knep1, M_KQUEUE);
-
 		}
 	}
 }
@@ -1267,7 +1273,7 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 			}
 		}
 		if (rmask & IN_DELETE) {
-			/*inotify_remove_child(iw);*/
+			iw->iw_marks |= IW_WATCH_DELETE;
 		}
 	}
 

@@ -96,7 +96,7 @@ struct inotify_event {
 
 #define IW_MARKED_FOR_DELETE	0x01
 #define IW_GOT_ONESHOT		0x02
-#define IW_IGNORED		0x04
+#define IW_WATCH_DELETE		0x04
 
 struct inotify_ucount {
 	uid_t	ic_uid;	
