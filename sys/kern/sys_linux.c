@@ -55,7 +55,7 @@
 
 /* TODO: Find and replace with inotify_flags */
 /* TODO: IN_IGNORED */
-/* TODO: IN_ISDIR */
+/* TODO: N_ISDIR for watch files */
 
 #define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
 
@@ -713,12 +713,6 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		ie->mask |= iqe->mask;
 		ie->cookie = iqe->cookie;
 
-		if (iw->iw_marks & IW_MARKED_FOR_DELETE ||
-				iw->iw_marks & IW_IGNORED ||
-				ie->mask & IN_UNMOUNT) {
-			ie->mask |= IN_IGNORED;
-		}
-
 		error = uiomove((caddr_t)ie, eventlen, uio);
 		if (error > 0) {
 			kprintf("inotify_read: error while transferring\n");
@@ -736,17 +730,8 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			} else {
 				inotify_rm_watch(ih, iw->parent);
 			}
-		}
-		if (iw->iw_marks & IW_MARKED_FOR_DELETE) {
-			if (--iw->iw_qrefs < 1)
+		} else  if ((iw->iw_marks & IW_MARKED_FOR_DELETE) > 0 && iw->iw_qrefs < 1) {
 				inotify_delete_watch(iw);
-		} else if (ie->mask & IN_IGNORED) {
-			if (iw->parent == NULL) {
-				inotify_rm_watch(ih, iw);
-			} else {
-				--iw->parent->childs;
-				inotify_rm_watch(ih, iw);
-			}
 		}
 	}
 
@@ -1269,6 +1254,21 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		inotify_queue_event(iw, rmask, IN_DELETE, NULL, 0);
 		inotify_queue_event(iw, rmask, IN_DELETE_SELF, NULL, 0);
 		inotify_queue_event(iw, rmask, IN_UNMOUNT, NULL, 0);
+
+		if (rmask & IN_UNMOUNT) {
+			if (iw->parent != NULL) {
+				inotify_queue_event(iw, IN_IGNORED, IN_IGNORED, NULL, 0);
+			} else {
+				inotify_queue_event(iw->parent, IN_IGNORED, IN_IGNORED, NULL, 0);
+			}
+		} else {
+			if (rmask & IN_DELETE_SELF) {
+				inotify_queue_event(iw, IN_IGNORED, IN_IGNORED, NULL, 0);
+			}
+		}
+		if (rmask & IN_DELETE) {
+			/*inotify_remove_child(iw);*/
+		}
 	}
 
 	*res += count;
