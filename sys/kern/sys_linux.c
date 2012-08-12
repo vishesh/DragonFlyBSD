@@ -663,8 +663,7 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	struct inotify_watch *iw;
 	struct inotify_queue_entry *iqe, *iqe_temp;
 	struct inotify_event *ie = NULL;
-	int error, res = 0, nevents;
-	int eventlen;
+	int error, res = 0, nevents, eventlen;
 	char *watch_name;
 
 	ie = kmalloc(INOTIFY_EVENT_SIZE + MAXPATHLEN, M_INOTIFY, M_WAITOK);
