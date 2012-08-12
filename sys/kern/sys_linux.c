@@ -54,8 +54,7 @@
 #include <sys/vnode.h>
 
 /* TODO: Find and replace with inotify_flags */
-/* TODO: IN_IGNORED */
-/* TODO: N_ISDIR for watch files */
+/* TODO: IN_ISDIR for watch files */
 
 #define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
 
