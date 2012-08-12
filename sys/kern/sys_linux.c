@@ -55,6 +55,10 @@
 
 /* TODO: Find and replace with inotify_flags */
 /* TODO: IN_ISDIR for watch files */
+/* TODO: cleanup unnecessary structures and memory allocations. 
+ 	Directly use inotify_events in copyout. */
+/* TODO: Better cleanup and memory management */
+/* TODO: Optimize */
 
 #define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
 
@@ -650,6 +654,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	inotify_delete_watch(iw);
 }
 
+/* TODO: Order IN_MOVED_TO and IN_MOVED_FROM events by marking or otherwise */
 static int
 inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 {
