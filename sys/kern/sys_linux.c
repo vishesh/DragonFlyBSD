@@ -128,6 +128,7 @@ static uint inotify_max_queued_events;
 
 SLIST_HEAD(, inotify_ucount) iuc_head = SLIST_HEAD_INITIALIZER(iuc_head);
 
+/* Open file relative to rfp */
 static int
 fp_open_at(const char *path, int flags, int mode, struct file *rfp,
 		struct file **fpp)
@@ -484,6 +485,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 
 		dbuf = kmalloc(dcount, M_INOTIFY, M_WAITOK);
 
+		/* Get the entries in the directory */
 		for (;;) {
 			error = kern_getdirentries(nfd, dbuf, dcount, &basep, &dblen, UIO_SYSSPACE);
 			if (error != 0) {
@@ -494,6 +496,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 			if (dblen == 0)
 				break;
 
+			/* start watching each file in directory */
 			for (direp = (struct dirent *)dbuf; (char*)direp < dbuf + dblen;
 					direp = _DIRENT_NEXT(direp)) {
 				if ((char *)_DIRENT_NEXT(direp) > dbuf + dblen)
@@ -516,6 +519,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				}
 				kprintf("Added %s\n", direp->d_name);
 
+				/* watch limit exceeded */
 				if (iuc->ic_watches >= inotify_max_user_watches) {
 					error = ENOSPC;
 					goto iwfdp_in_scan_error;
@@ -608,6 +612,8 @@ inotify_delete_watch(struct inotify_watch *iw)
 		fp_close(iw->fp);
 		iw->fp = NULL;
 	}
+	/* we still have pending events in queue to be
+	 * read, hence we don't free things up yet */
 	if (iw->iw_qrefs > 0)
 		return;
 	if (iw->pathname != NULL)
@@ -826,7 +832,7 @@ filt_inotifyread(struct knote *kn, long hint)
 		return (1);
 	}
 
-        return (ih->queue_size > 0);
+	return (ih->queue_size > 0);
 }
 
 static void
@@ -1224,6 +1230,7 @@ inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 	return (0);
 }
 
+/* Create and set new queue entry and append it to event queue */
 static void
 inotify_queue_event(struct inotify_watch *iw, inotify_flags mask, inotify_flags hint, const char *filename, int cookie)
 {
@@ -1251,6 +1258,8 @@ inotify_queue_event(struct inotify_watch *iw, inotify_flags mask, inotify_flags 
 	iqe->cookie = cookie;
 	++iw->iw_qrefs;
 
+	/* To let future iterations know for ONSHOT cases
+	 * that we already have fetched an event */
 	if (iw->parent != NULL)
 		iw->parent->iw_marks |= IW_GOT_ONESHOT;
 	iw->iw_marks |= IW_GOT_ONESHOT;
@@ -1259,6 +1268,7 @@ inotify_queue_event(struct inotify_watch *iw, inotify_flags mask, inotify_flags 
 	++ih->queue_size;
 }
 
+/* For NOTE_CREATE, NOTE_MOVED_TO and NOTE_MOVED_FROM */
 static __inline void
 inotify_ikap_events(struct inotify_watch *iw, int khint, int inmask,
 		struct inotify_kevent_copyin_args *ikap)
@@ -1273,6 +1283,8 @@ inotify_ikap_events(struct inotify_watch *iw, int khint, int inmask,
 			if (khint == NOTE_CREATE) {
 				inotify_insert_child_watch(iw, fname);
 			} else if (khint == NOTE_MOVED_TO) {
+				/* Watch associated with NOTE_MOVED_FROM
+				 * is removed. */
 				inotify_insert_child_watch(iw, fname);
 			}
 			/* clean the data */
