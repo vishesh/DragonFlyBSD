@@ -118,12 +118,12 @@ struct inotify_handle {
 	struct file	    *fp;
 	unsigned int	     max_events; /* TODO: Check */
 	unsigned int	     queue_size;
-	unsigned int	     nchilds;
+	unsigned int	     nchilds;		    /* number of childs */
 	struct filedesc	    *wfdp;
 	struct kqueue	     kq;
 	struct inotify_ucount *iuc;
-	TAILQ_HEAD(, inotify_watch) wlh;
-	TAILQ_HEAD(, inotify_queue_entry) eventq;
+	TAILQ_HEAD(, inotify_watch) wlh;	    /* list of watches */
+	TAILQ_HEAD(, inotify_queue_entry) eventq;   /* event queue */
 };
 
 struct inotify_watch {
@@ -137,8 +137,8 @@ struct inotify_watch {
 	int16_t		 iw_marks;
 	struct inotify_handle *handle;
 	struct inotify_watch  *parent;
-	TAILQ_HEAD(, kevent_note_entry) knel;
-	TAILQ_ENTRY(inotify_watch) watchlist;
+	TAILQ_HEAD(, kevent_note_entry) knel; /* event queue */
+	TAILQ_ENTRY(inotify_watch) watchlist; /* watches */
 };
 
 #endif	/* _KERNEL */
