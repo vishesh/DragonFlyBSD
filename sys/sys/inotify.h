@@ -116,7 +116,6 @@ struct inotify_queue_entry {
 
 struct inotify_handle {
 	struct file	    *fp;
-	unsigned int	     event_count;
 	unsigned int	     max_events; /* TODO: Check */
 	unsigned int	     queue_size;
 	unsigned int	     nchilds;

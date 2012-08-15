@@ -270,7 +270,6 @@ inotify_init(int flags, int *result)
 	TAILQ_INIT(&ih->eventq);
 	TAILQ_INIT(&ih->wlh);
 	ih->fp = fp;
-	ih->event_count = 0;
 	ih->queue_size = 0;
 	ih->max_events = inotify_max_queued_events; /*TODO: Make it work? */
 	ih->nchilds = 0;
