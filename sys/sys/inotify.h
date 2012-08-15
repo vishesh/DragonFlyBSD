@@ -40,9 +40,6 @@
 #ifndef _DF_BSD_INOTIFY_H
 #define _DF_BSD_INOTIFY_H
 
-#include <sys/eventvar.h>
-#include <sys/fcntl.h>
-#include <sys/filedesc.h>
 #include <sys/stdint.h>
 #include <sys/types.h>
 
@@ -97,6 +94,10 @@ struct inotify_event {
 #define IW_MARKED_FOR_DELETE	0x01
 #define IW_GOT_ONESHOT		0x02
 #define IW_WATCH_DELETE		0x04
+
+#include <sys/eventvar.h>
+#include <sys/fcntl.h>
+#include <sys/filedesc.h>
 
 struct inotify_ucount {
 	uid_t	ic_uid;	
