@@ -1387,16 +1387,13 @@ knote_cookie(struct klist *list1, intptr_t data1, struct klist *list2, intptr_t 
 }
 
 void
-knote_data(struct klist *list, int hint, intptr_t data)
+knote_data(struct klist *list, int hint, char *name, int len)
 {
 	struct knote *kn;
 	struct kevent *kevp;
 	struct kevent_note_entry *knep;
-	struct componentname *cnp;
-	char *str = 0;
 	TAILQ_HEAD(kneh, kevent_note_entry) *head;
 
-	cnp = (struct componentname *)data;
 	SLIST_FOREACH(kn, list, kn_next) {
 		kevp = &kn->kn_kevent;
 		if (kn->kn_sdata == 0)
@@ -1404,16 +1401,15 @@ knote_data(struct klist *list, int hint, intptr_t data)
 
 		if ((hint & NOTE_CREATE) > 0 || (hint & NOTE_MOVED_TO) > 0) {
 			if (kn->kn_kq->kq_state & KQ_DATASYS) {
-				str = cnp->cn_nameptr;
 				head = (struct kneh *)kn->kn_sdata;
-				knep = kmalloc(sizeof *knep + cnp->cn_namelen + 1, M_KQUEUE, M_WAITOK);
+				knep = kmalloc(sizeof *knep + len + 1, M_KQUEUE, M_WAITOK);
 				knep->cookie = 0;
 				knep->hint = hint;
-				strcpy((char*)&knep->data, cnp->cn_nameptr);
+				strcpy((char*)&knep->data, name);
 				kevp->data = kn->kn_sdata;
 				TAILQ_INSERT_TAIL(head, knep, entries);
 			} else if (kn->kn_sdata != 0) {
-				copyout((void *)cnp->cn_nameptr, (void *)kevp->data, cnp->cn_namelen);
+				copyout((void *)name, (void *)kevp->data, len);
 			}
 		}
 	}

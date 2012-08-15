@@ -165,6 +165,14 @@ hammer_knote(struct vnode *vp, int flags)
 		KNOTE(&vp->v_pollinfo.vpi_kqinfo.ki_note, flags);
 }
 
+static __inline
+void
+hammer_knote_data(struct vnode *vp, int flags, char *name, int len)
+{
+	if (flags)
+		KNOTE_DATA(&vp->v_pollinfo.vpi_kqinfo.ki_note, flags, name, len);
+}
+
 #ifdef DEBUG_TRUNCATE
 struct hammer_inode *HammerTruncIp;
 #endif
@@ -1017,6 +1025,8 @@ hammer_vop_ncreate(struct vop_ncreate_args *ap)
 			cache_setvp(ap->a_nch, *ap->a_vpp);
 		}
 		hammer_knote(ap->a_dvp, NOTE_WRITE);
+		hammer_knote_data(ap->a_dvp, NOTE_CREATE, ap->a_nch->ncp->nc_name,
+				ap->a_nch->ncp->nc_nlen);
 		hammer_knote(ap->a_dvp, NOTE_CREATE);
 	}
 	lwkt_reltoken(&hmp->fs_token);
@@ -1465,6 +1475,9 @@ hammer_vop_nlink(struct vop_nlink_args *ap)
 	}
 	hammer_done_transaction(&trans);
 	hammer_knote(ap->a_vp, NOTE_LINK);
+	hammer_knote_data(ap->a_dvp, NOTE_CREATE|NOTE_LINK,
+			ap->a_nch->ncp->nc_name, ap->a_nch->ncp->nc_nlen);
+	hammer_knote(ap->a_dvp, NOTE_CREATE);
 	hammer_knote(ap->a_dvp, NOTE_WRITE);
 	lwkt_reltoken(&hmp->fs_token);
 	return (error);
