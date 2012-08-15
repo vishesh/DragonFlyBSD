@@ -84,6 +84,7 @@ static int	inotify_read(struct file *fp, struct uio *uio,
 static int	inotify_close(struct file *fp);
 static int	inotify_stat(struct file *fp, struct stat *st,
 			struct ucred *cred);
+int		inotify_kqfilter(struct file *fp, struct knote *kn);
 static int	inotify_shutdown(struct file *fp, int how);
 
 static int	inotify_fdalloc(struct filedesc *fdp, int want, int *result);
@@ -111,7 +112,7 @@ static struct fileops inotify_fops = {
 	.fo_read = inotify_read,
 	.fo_write = badfo_readwrite,
 	.fo_ioctl = badfo_ioctl,
-	.fo_kqfilter = badfo_kqfilter,
+	.fo_kqfilter = inotify_kqfilter,
 	.fo_stat = inotify_stat,
 	.fo_close = inotify_close,
 	.fo_shutdown = inotify_shutdown
@@ -809,6 +810,62 @@ inotify_stat(struct file *fp, struct stat *st, struct ucred *cred)
 {
 	/*struct inotify_handle *ih = (struct inotify_handle *)fp->f_data;*/
 	bzero((void *)st, sizeof(*st));
+	return (0);
+}
+
+/*ARGSUSED*/
+static int
+filt_inotifyread(struct knote *kn, long hint)
+{
+	struct file *fp = kn->kn_ptr.p_fp;
+	struct inotify_handle *ih = (struct inotify_handle*)fp->f_data;
+
+	/*
+	 * filesystem is gone, so set the EOF flag and schedule 
+	 * the knote for deletion.
+	 */
+	if (hint == NOTE_REVOKE) {
+		kn->kn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT);
+		return (1);
+	}
+
+        return (ih->queue_size > 0);
+}
+
+static void
+filt_inotifydetach(struct knote *kn)
+{
+	struct vnode *vp = (struct vnode *)kn->kn_hook;
+
+	lwkt_gettoken(&vp->v_token);
+	knote_remove(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
+	lwkt_reltoken(&vp->v_token);
+}
+
+
+static struct filterops inotifyread_filtops =
+	{ FILTEROP_ISFD, NULL, filt_inotifydetach, filt_inotifyread };
+
+int
+inotify_kqfilter(struct file *fp, struct knote *kn)
+{
+	struct vnode *vp = (struct vnode *)kn->kn_hook;
+
+	switch (kn->kn_filter) {
+	case EVFILT_READ:
+		kn->kn_fop = &inotifyread_filtops;
+		break;
+	default:
+		return (EOPNOTSUPP);
+	}
+
+	kn->kn_hook = (caddr_t)vp;
+
+	/* XXX: kq token actually protects the list */
+	lwkt_gettoken(&vp->v_token);
+	knote_insert(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
+	lwkt_reltoken(&vp->v_token);
+
 	return (0);
 }
 
