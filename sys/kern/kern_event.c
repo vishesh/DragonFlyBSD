@@ -1332,53 +1332,48 @@ filter_event(struct knote *kn, long hint)
 }
 
 void
-knote_cookie(struct klist *list1, intptr_t data1, struct klist *list2, intptr_t data2)
+knote_cookie(struct klist *list1, char *n1, int l1,
+		struct klist *list2, char *n2, int l2)
 {
 	struct knote *kn;
 	struct kevent *kevp;
 	struct kevent_note_entry *knep;
-	struct componentname *cnp;
-	char *str;
 	int cookie;
 	TAILQ_HEAD(kneh, kevent_note_entry) *head;
 	spin_lock(&inotify_cookie_lock);
 	cookie = ++inotify_cookie;
 	spin_unlock(&inotify_cookie_lock);
 
-	cnp = (struct componentname *)data1;
 	SLIST_FOREACH(kn, list1, kn_next) {
 		kevp = &kn->kn_kevent;
 		if (kn->kn_sdata == 0)
 			continue;
 
 		if (kn->kn_kq->kq_state & KQ_DATASYS) {
-			str = cnp->cn_nameptr;
 			head = (struct kneh *)kn->kn_sdata;
-			knep = kmalloc(sizeof *knep + cnp->cn_namelen + 1, M_KQUEUE, M_WAITOK);
+			knep = kmalloc(sizeof *knep + l1 + 1, M_KQUEUE, M_WAITOK);
 			knep->cookie = cookie;
 			knep->hint = NOTE_MOVED_FROM;
-			strcpy((char*)&knep->data, cnp->cn_nameptr);
+			strcpy((char*)&knep->data, n1);
 			kevp->data = kn->kn_sdata;
 			TAILQ_INSERT_TAIL(head, knep, entries);
 		} else if (kn->kn_sdata != 0) {
-			copyout((void *)cnp->cn_nameptr, (void *)kevp->data, cnp->cn_namelen);
+			copyout((void *)n1, (void *)kevp->data, l1);
 		}
 	}
 	knote(list1, NOTE_MOVED_FROM);
 
-	cnp = (struct componentname *)data2;
 	SLIST_FOREACH(kn, list2, kn_next) {
 		kevp = &kn->kn_kevent;
 		if (kn->kn_sdata == 0)
 			continue;
 
 		if (kn->kn_kq->kq_state & KQ_DATASYS) {
-			str = cnp->cn_nameptr;
 			head = (struct kneh *)kn->kn_sdata;
-			knep = kmalloc(sizeof *knep + cnp->cn_namelen + 1, M_KQUEUE, M_WAITOK);
+			knep = kmalloc(sizeof *knep + l2 + 1, M_KQUEUE, M_WAITOK);
 			knep->cookie = cookie;
 			knep->hint = NOTE_MOVED_TO;
-			strcpy((char*)&knep->data, cnp->cn_nameptr);
+			strcpy((char*)&knep->data, n2);
 			kevp->data = kn->kn_sdata;
 			TAILQ_INSERT_TAIL(head, knep, entries);
 		}

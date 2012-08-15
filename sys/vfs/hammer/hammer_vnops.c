@@ -173,6 +173,15 @@ hammer_knote_data(struct vnode *vp, int flags, char *name, int len)
 		KNOTE_DATA(&vp->v_pollinfo.vpi_kqinfo.ki_note, flags, name, len);
 }
 
+static __inline
+void
+hammer_knote_cookie(struct vnode *v1, char *n1, int l1,
+		struct vnode *v2, char *n2, int l2)
+{
+	KNOTE_COOKIE(&v1->v_pollinfo.vpi_kqinfo.ki_note, n1, l1,
+			&v2->v_pollinfo.vpi_kqinfo.ki_note, n2, l2);
+}
+
 #ifdef DEBUG_TRUNCATE
 struct hammer_inode *HammerTruncIp;
 #endif
@@ -2128,6 +2137,10 @@ retry:
 		cache_rename(ap->a_fnch, ap->a_tnch);
 		hammer_knote(ap->a_fdvp, NOTE_WRITE);
 		hammer_knote(ap->a_tdvp, NOTE_WRITE);
+		hammer_knote_cookie(ip->vp, ap->a_fnch->ncp->nc_name,
+				ap->a_fnch->ncp->nc_nlen,
+				ap->a_tdvp, ap->a_tnch->ncp->nc_name,
+				ap->a_tnch->ncp->nc_nlen);
 		while (ip->vp) {
 			struct vnode *vp;
 

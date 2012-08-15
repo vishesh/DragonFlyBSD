@@ -798,8 +798,6 @@ inotify_close(struct file *fp)
 	}
 
 	kqueue_terminate(&ih->kq);
-	kfree(fdp, M_INOTIFY);
-	kfree(ih, M_INOTIFY);
 
 	return (0);
 }
