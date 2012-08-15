@@ -2134,13 +2134,13 @@ retry:
 	 */
         hammer_done_cursor(&cursor);
 	if (error == 0) {
-		cache_rename(ap->a_fnch, ap->a_tnch);
-		hammer_knote(ap->a_fdvp, NOTE_WRITE);
-		hammer_knote(ap->a_tdvp, NOTE_WRITE);
 		hammer_knote_cookie(ip->vp, ap->a_fnch->ncp->nc_name,
 				ap->a_fnch->ncp->nc_nlen,
 				ap->a_tdvp, ap->a_tnch->ncp->nc_name,
 				ap->a_tnch->ncp->nc_nlen);
+		cache_rename(ap->a_fnch, ap->a_tnch);
+		hammer_knote(ap->a_fdvp, NOTE_WRITE);
+		hammer_knote(ap->a_tdvp, NOTE_WRITE);
 		while (ip->vp) {
 			struct vnode *vp;
 
