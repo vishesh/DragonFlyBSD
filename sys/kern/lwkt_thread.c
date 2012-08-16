@@ -595,7 +595,6 @@ lwkt_switch(void)
     globaldata_t gd = mycpu;
     thread_t td = gd->gd_curthread;
     thread_t ntd;
-    thread_t xtd;
     int spinning = 0;
 
     KKASSERT(gd->gd_processing_ipiq == 0);
@@ -614,7 +613,7 @@ lwkt_switch(void)
 
 	if (gd->gd_trap_nesting_level == 0 && panic_cpu_gd != mycpu) {
 	    panic("lwkt_switch: Attempt to switch from a "
-		  "a fast interrupt, ipi, or hard code section, "
+		  "fast interrupt, ipi, or hard code section, "
 		  "td %p\n",
 		  td);
 	} else {
@@ -774,7 +773,6 @@ lwkt_switch(void)
 	if (fairq_bypass > 0)
 		goto skip;
 
-	xtd = NULL;
 	while ((ntd = TAILQ_NEXT(ntd, td_threadq)) != NULL) {
 		/*
 		 * Never schedule threads returning to userland or the
@@ -1129,6 +1127,8 @@ splz_check(void)
  *
  * We only want to execute the splz() on the 1->0 transition of
  * critcount and not in a hard code section or if too deeply nested.
+ *
+ * NOTE: gd->gd_spinlocks_wr is implied to be 0 when td_critcount is 0.
  */
 void
 lwkt_maybe_splz(thread_t td)

@@ -118,12 +118,6 @@ puffs_vnop_lookup(struct vop_nresolve_args *ap)
 	DPRINTF(("puffs_lookup: \"%s\", parent vnode %p\n",
 	    ncp->nc_name, dvp));
 
-	if ((error = vget(dvp, LK_EXCLUSIVE)) != 0) {
-		DPRINTF(("puffs_vnop_lookup: EAGAIN on ncp %p %s\n",
-		    ncp, ncp->nc_name));
-		return EAGAIN;
-	}
-
 	PUFFS_MSG_ALLOC(vn, lookup);
 	puffs_makecn(&lookup_msg->pvnr_cn, &lookup_msg->pvnr_cn_cred,
 	    ncp, cred);
@@ -168,7 +162,6 @@ puffs_vnop_lookup(struct vop_nresolve_args *ap)
 	}
 
  out:
-	vput(dvp);
 	if (!error && vp != NULL) {
 		vn_unlock(vp);
 		cache_setvp(nch, vp);
@@ -1277,7 +1270,6 @@ puffs_vnop_rename(struct vop_nrename_args *ap)
 	struct ucred *cred = ap->a_cred;
 	struct puffs_mount *pmp = MPTOPUFFSMP(fdvp->v_mount);
 	int error;
-	boolean_t doabort = TRUE;
 
 	if (!EXISTSOP(pmp, RENAME))
 		return EOPNOTSUPP;
@@ -1329,7 +1321,6 @@ puffs_vnop_rename(struct vop_nrename_args *ap)
 	    PUFFS_VN_RENAME, VPTOPNC(fdvp));
 
 	PUFFS_MSG_ENQUEUEWAIT2(pmp, park_rename, fdvp->v_data, NULL, error);
-	doabort = FALSE;
 	PUFFS_MSG_RELEASE(rename);
 	error = checkerr(pmp, error, __func__);
 

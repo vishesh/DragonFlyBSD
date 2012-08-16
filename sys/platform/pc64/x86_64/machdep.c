@@ -1113,7 +1113,7 @@ exec_setregs(u_long entry, u_long stack, u_long ps_strings)
 	wrmsr(MSR_KGSBASE, 0);
 
 	/* Initialize the npx (if any) for the current process. */
-	npxinit(__INITIAL_NPXCW__);
+	npxinit(__INITIAL_FPUCW__);
 	crit_exit();
 
 	pcb->pcb_ds = _udatasel;
@@ -1521,8 +1521,8 @@ getmemsize(caddr_t kmdp, u_int64_t first)
 	 * exceeding Maxmem.
 	 */
 	for (i = j = 0; i <= physmap_idx; i += 2) {
-		if (physmap[i+1] > ptoa((vm_paddr_t)Maxmem))
-			physmap[i+1] = ptoa((vm_paddr_t)Maxmem);
+		if (physmap[i+1] > ptoa(Maxmem))
+			physmap[i+1] = ptoa(Maxmem);
 		physmap[i] = (physmap[i] + PHYSMAP_ALIGN_MASK) &
 			     ~PHYSMAP_ALIGN_MASK;
 		physmap[i+1] = physmap[i+1] & ~PHYSMAP_ALIGN_MASK;
@@ -1595,7 +1595,7 @@ getmemsize(caddr_t kmdp, u_int64_t first)
 			*pte = pa | PG_V | PG_RW | PG_N;
 			cpu_invltlb();
 
-			tmp = *(int *)ptr;
+			tmp = *ptr;
 			/*
 			 * Test for alternating 1's and 0's
 			 */
@@ -1627,7 +1627,7 @@ getmemsize(caddr_t kmdp, u_int64_t first)
 			/*
 			 * Restore original value.
 			 */
-			*(int *)ptr = tmp;
+			*ptr = tmp;
 
 			/*
 			 * Adjust array of valid/good pages.
@@ -1911,7 +1911,7 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 	TUNABLE_INT_FETCH("hw.lapic_enable", &lapic_enable);
 
 	/*
-	 * Some of the virtaul machines do not work w/ I/O APIC
+	 * Some of the virtual machines do not work w/ I/O APIC
 	 * enabled.  If the user does not explicitly enable or
 	 * disable the I/O APIC (ioapic_enable < 0), then we
 	 * disable I/O APIC on all virtual machines.

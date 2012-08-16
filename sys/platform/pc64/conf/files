@@ -33,6 +33,11 @@ hptmvraid.o			optional	hptmv			\
 	compile-with	"uudecode < $S/dev/raid/hptmv/x86_64-elf.raid.o.uu" \
 	no-implicit-rule
 #
+hptrr_lib.o			optional	hptrr			\
+	dependency	"$S/dev/raid/hptrr/x86_64-elf.hptrr_lib.o.uu"	\
+	compile-with	"uudecode < $S/dev/raid/hptrr/x86_64-elf.hptrr_lib.o.uu" \
+	no-implicit-rule
+#
 emulation/linux/linux_file.c	optional	compat_linux32
 emulation/linux/linux_getcwd.c	optional	compat_linux32
 emulation/linux/linux_ioctl.c	optional	compat_linux32
@@ -150,6 +155,7 @@ cpu/x86_64/misc/x86_64-gdbstub.c	optional	ddb
 cpu/x86_64/misc/lwbuf.c			standard
 cpu/x86_64/misc/elf_machdep.c		standard
 cpu/x86_64/misc/in_cksum2.s		optional	inet
+cpu/x86_64/misc/in_cksum2.s		optional	inet6
 cpu/x86_64/misc/ktr.c			optional	ktr
 cpu/x86_64/misc/db_disasm.c		optional	ddb
 cpu/x86_64/misc/bzeront.s		standard

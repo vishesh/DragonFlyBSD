@@ -65,12 +65,19 @@ extern struct dsched_policy dsched_fq_policy;
 void
 fq_dispatcher(struct fq_disk_ctx *diskctx)
 {
-	struct dispatch_prep dispatch_ary[FQ_DISPATCH_ARRAY_SZ];
+	struct dispatch_prep *dispatch_ary;
 	struct dsched_thread_io	*ds_tdio, *ds_tdio2;
 	struct fq_thread_io	*tdio;
 	struct bio *bio, *bio2;
 	int idle;
 	int i, prepd_io;
+
+	/*
+	 * Array is dangerously big for an on-stack declaration, allocate
+	 * it instead.
+	 */
+	dispatch_ary = kmalloc(sizeof(*dispatch_ary) * FQ_DISPATCH_ARRAY_SZ,
+			       M_TEMP, M_INTWAIT | M_ZERO);
 
 	/*
 	 * We need to manually assign an tdio to the tdctx of this thread
@@ -83,23 +90,18 @@ fq_dispatcher(struct fq_disk_ctx *diskctx)
 	DSCHED_DISK_CTX_LOCK(&diskctx->head);
 	for(;;) {
 		idle = 0;
-		/* sleep ~60 ms */
-		if ((lksleep(diskctx, &diskctx->head.lock, 0, "fq_dispatcher", hz/15) == 0)) {
+		/*
+		 * sleep ~60 ms, failsafe low hz rates.
+		 */
+		if ((lksleep(diskctx, &diskctx->head.lock, 0,
+			     "fq_dispatcher", (hz + 14) / 15) == 0)) {
 			/*
 			 * We've been woken up; this either means that we are
 			 * supposed to die away nicely or that the disk is idle.
 			 */
 
-			if (__predict_false(diskctx->die == 1)) {
-				/* If we are supposed to die, drain all queues */
-				fq_drain(diskctx, FQ_DRAIN_FLUSH);
-
-				/* Now we can safely unlock and exit */
-				DSCHED_DISK_CTX_UNLOCK(&diskctx->head);
-				kprintf("fq_dispatcher is peacefully dying\n");
-				lwkt_exit();
-				/* NOTREACHED */
-			}
+			if (__predict_false(diskctx->die == 1))
+				break;
 
 			/*
 			 * We have been awakened because the disk is idle.
@@ -183,6 +185,18 @@ fq_dispatcher(struct fq_disk_ctx *diskctx)
 		DSCHED_DISK_CTX_LOCK(&diskctx->head);
 		dsched_disk_ctx_unref(&diskctx->head);
 	}
+
+	/*
+	 * If we are supposed to die, drain all queues, then
+	 * unlock and exit.
+	 */
+	fq_drain(diskctx, FQ_DRAIN_FLUSH);
+	DSCHED_DISK_CTX_UNLOCK(&diskctx->head);
+	kfree(dispatch_ary, M_TEMP);
+
+	kprintf("fq_dispatcher is peacefully dying\n");
+	lwkt_exit();
+	/* NOTREACHED */
 }
 
 void
@@ -333,7 +347,7 @@ fq_balance_self(struct fq_thread_io *tdio) {
 	DSCHED_DISK_CTX_LOCK_ASSERT(diskctx);
 #endif
 
-	used_budget = ((int64_t)avg_latency * transactions);
+	used_budget = avg_latency * transactions;
 	budget = diskctx->budgetpb[(tdio->head.p) ? tdio->head.p->p_ionice : 0];
 
 	if (used_budget > 0) {

@@ -676,7 +676,7 @@ _bus_dmamap_load_buffer(bus_dma_tag_t dmat,
 			paddr = _bus_dma_extract(pmap, vaddr);
 			if (run_filter(dmat, paddr) != 0)
 				map->pagesneeded++;
-			vaddr += (PAGE_SIZE - ((vm_offset_t)vaddr & PAGE_MASK));
+			vaddr += (PAGE_SIZE - (vaddr & PAGE_MASK));
 		}
 	}
 
@@ -1371,6 +1371,12 @@ add_bounce_page(bus_dma_tag_t dmat, bus_dmamap_t map, vm_offset_t vaddr,
 
 	BZ_UNLOCK(bz);
 
+	if (dmat->flags & BUS_DMA_KEEP_PG_OFFSET) {
+		/* Page offset needs to be preserved. */
+		bpage->vaddr |= vaddr & PAGE_MASK;
+		bpage->busaddr |= vaddr & PAGE_MASK;
+	}
+
 	bpage->datavaddr = vaddr;
 	bpage->datacount = size;
 	STAILQ_INSERT_TAIL(&map->bpages, bpage, links);
@@ -1385,6 +1391,16 @@ free_bounce_page(bus_dma_tag_t dmat, struct bounce_page *bpage)
 
 	bpage->datavaddr = 0;
 	bpage->datacount = 0;
+ 
+	if (dmat->flags & BUS_DMA_KEEP_PG_OFFSET) {
+		/*
+		 * Reset the bounce page to start at offset 0.  Other uses
+		 * of this bounce page may need to store a full page of
+		 * data and/or assume it starts on a page boundary.
+		 */
+		bpage->vaddr &= ~PAGE_MASK;
+		bpage->busaddr &= ~PAGE_MASK;
+	}
 
 	BZ_LOCK(bz);
 

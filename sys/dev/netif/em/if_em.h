@@ -137,7 +137,7 @@
 #define EM_TX_OACTIVE_MAX		64
 
 /* Interrupt throttle rate */
-#define EM_DEFAULT_ITR			10000
+#define EM_DEFAULT_ITR			6000
 
 /*
  * This parameter controls whether or not autonegotation is enabled.
@@ -247,6 +247,8 @@ struct em_dma_alloc {
 struct adapter {
 	struct arpcom		arpcom;
 	struct e1000_hw		hw;
+	int			flags;
+#define EM_FLAG_SHARED_INTR	0x1
 
 	/* DragonFly operating-system-specific structures. */
 	struct e1000_osdep	osdep;

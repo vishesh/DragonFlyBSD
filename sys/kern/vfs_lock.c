@@ -30,14 +30,11 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $DragonFly: src/sys/kern/vfs_lock.c,v 1.30 2008/06/30 03:57:41 dillon Exp $
  */
 
 /*
  * External virtual filesystem routines
  */
-#include "opt_ddb.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -417,7 +414,6 @@ vnode_ctor(void *obj, void *private, int ocflags)
 
 	lwkt_token_init(&vp->v_token, "vnode");
 	lockinit(&vp->v_lock, "vnode", 0, 0);
-	ccms_dataspace_init(&vp->v_ccms);
 	TAILQ_INIT(&vp->v_namecache);
 	RB_INIT(&vp->v_rbclean_tree);
 	RB_INIT(&vp->v_rbdirty_tree);
@@ -432,10 +428,9 @@ vnode_ctor(void *obj, void *private, int ocflags)
 void
 vnode_dtor(void *obj, void *private)
 {
-	struct vnode *vp = obj;
+	struct vnode *vp __debugvar = obj;
 
 	KKASSERT((vp->v_flag & (VCACHED|VFREE)) == 0);
-	ccms_dataspace_destroy(&vp->v_ccms);
 }
 
 /****************************************************************

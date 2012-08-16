@@ -125,6 +125,8 @@ struct mii_softc {
 	int mii_extcapabilities;	/* extended capabilities from EXTSR */
 	int mii_ticks;			/* MII_TICK counter */
 	int mii_anegticks;		/* ticks before retrying aneg */
+	int mii_privtag;		/* MII_PRIVTAG_ */
+	uintptr_t mii_priv;		/* private data, based on mii_privtag */
 
 	int mii_media_active;		/* last active media */
 	int mii_media_status;		/* last active status */
@@ -154,8 +156,29 @@ struct mii_attach_args {
 	int mii_id2;			/* PHY ID register 2 */
 	int mii_capmask;		/* capability mask from BMSR */
 	int mii_flags;			/* inherited by mii_softc->mii_flags */
+	int mii_privtag;		/* MII_PRIVTAG_ */
+	uintptr_t mii_priv;		/* private data, based on mii_privtag */
 };
 typedef struct mii_attach_args mii_attach_args_t;
+
+/*
+ * Used to probe a PHY to a network device.
+ */
+struct mii_probe_args {
+	ifm_change_cb_t mii_ifmedia_upd;/* ifmedia_upd callback */
+	ifm_stat_cb_t mii_ifmedia_sts;	/* ifmedia_sts callback */
+	u_int mii_probemask;		/* PHY probe location mask */
+	int mii_capmask;		/* capability mask from BMSR */
+	int mii_flags;			/* inherited by mii_softc->mii_flags */
+	int mii_privtag;		/* MII_PRIVTAG_ */
+	uintptr_t mii_priv;		/* private data, based on mii_privtag */
+};
+
+#define MII_PROBEMASK_DEFAULT	0xffffffff /* probe at all locations */
+#define MII_CAPMASK_DEFAULT	0xffffffff /* all capabilities from BMSR */
+
+#define MII_PRIVTAG_NONE	0	/* no private data (mii_priv) */
+#define MII_PRIVTAG_BRGPHY	1	/* brgphy specific */
 
 /*
  * Used to match a PHY
@@ -226,14 +249,13 @@ extern const struct mii_media	mii_media_table[MII_NMEDIA];
 extern devclass_t	miibus_devclass;
 extern driver_t		miibus_driver;
 
-int	miibus_probe(device_t);
-int	miibus_attach(device_t);
-int	miibus_detach(device_t);
-
 int	mii_mediachg(struct mii_data *);
 void	mii_tick(struct mii_data *);
 void	mii_pollstat(struct mii_data *);
 int	mii_phy_probe(device_t, device_t *, ifm_change_cb_t, ifm_stat_cb_t);
+int	mii_probe(device_t, device_t *, const struct mii_probe_args *);
+void	mii_probe_args_init(struct mii_probe_args *,
+	    ifm_change_cb_t, ifm_stat_cb_t);
 
 void	mii_phy_add_media(struct mii_softc *);
 void	mii_phy_set_media(struct mii_softc *);

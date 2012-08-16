@@ -94,12 +94,12 @@ extern int tcp_eifel_rtoinc;
 
 /* TCP segment queue entry */
 struct tseg_qent {
-	LIST_ENTRY(tseg_qent) tqe_q;
+	TAILQ_ENTRY(tseg_qent) tqe_q;
 	int	tqe_len;		/* TCP segment data length */
 	struct	tcphdr *tqe_th;		/* a pointer to tcp header */
 	struct	mbuf	*tqe_m;		/* mbuf contains packet */
 };
-LIST_HEAD(tsegqe_head, tseg_qent);
+TAILQ_HEAD(tsegqe_head, tseg_qent);
 extern int	tcp_reass_maxseg;
 extern int	tcp_reass_qsize;
 #ifdef MALLOC_DECLARE
@@ -168,14 +168,14 @@ struct tcpcb {
 #define	TF_NOPUSH	0x00001000	/* don't push */
 #define TF_LISTEN	0x00002000	/* listen(2) has been called */
 #define TF_SIGNATURE	0x00004000	/* require MD5 digests (RFC2385) */
-#define TF_UNUSED001	0x00008000
+#define TF_NCR		0x00008000	/* Non-Congestion Robustness RFC4653 */
 #define	TF_MORETOCOME	0x00010000	/* More data to be appended to sock */
-#define	TF_UNUSED005	0x00020000
+#define	TF_SAWFIN	0x00020000	/* FIN has been seen */
 #define	TF_LASTIDLE	0x00040000	/* connection was previously idle */
 #define	TF_RXWIN0SENT	0x00080000	/* sent a receiver win 0 in response */
-#define	TF_FASTRECOVERY	0x00100000	/* in NewReno Fast Recovery */
-#define	TF_UNUSED006	0x00200000
-#define	TF_UNUSED007	0x00400000
+#define	TF_FASTRECOVERY	0x00100000	/* in Fast Recovery */
+#define	TF_QUEDFIN	0x00200000	/* FIN has been received */
+#define	TF_XMITNOW	0x00400000	/* Temporarily override Nagle */
 #define	TF_UNUSED008	0x00800000
 #define	TF_UNUSED009	0x01000000
 #define	TF_FORCE	0x02000000	/* Set if forcing out a byte */
@@ -189,7 +189,7 @@ struct tcpcb {
 	u_long	snd_last;		/* time last data were sent */
 
 	tcp_seq	snd_una;		/* send unacknowledged */
-	tcp_seq	snd_recover;		/* for use with NewReno Fast Recovery */
+	tcp_seq	snd_recover;		/* for use with Fast Recovery */
 	tcp_seq	snd_max;		/* highest sequence number sent;
 					 * used to recognize retransmits */
 	tcp_seq	snd_nxt;		/* send next */
@@ -248,7 +248,7 @@ struct tcpcb {
 /* experimental */
 	u_int	rxt_flags;
 #define	TRXT_F_REBASERTO	0x0001	/* Recalculate RTO based on new RTT */
-#define	TRXT_F_WASFRECOVERY	0x0002	/* was in NewReno Fast Recovery */
+#define	TRXT_F_WASFRECOVERY	0x0002	/* was in Fast Recovery */
 #define	TRXT_F_FIRSTACCACK	0x0004	/* Look for 1st acceptable ACK. */
 #define	TRXT_F_FASTREXMT	0x0008	/* Did Fast Retransmit. */
 #define	TRXT_F_EARLYREXMT	0x0010	/* Did Early (Fast) Retransmit. */
@@ -400,6 +400,7 @@ struct tcp_stats {
 	u_long	tcps_rcvackbyte;	/* bytes acked by rcvd acks */
 	u_long	tcps_rcvwinupd;		/* rcvd window update packets */
 	u_long	tcps_pawsdrop;		/* segments dropped due to PAWS */
+	u_long	tcps_pawsaccept;	/* segments accepted, PAWS tolerance */
 	u_long	tcps_predack;		/* times hdr predict ok for acks */
 	u_long	tcps_preddat;		/* times hdr predict ok for data pkts */
 	u_long	tcps_pcbcachemiss;
@@ -414,12 +415,13 @@ struct tcp_stats {
 	u_long	tcps_mturesent;		/* resends due to MTU discovery */
 	u_long	tcps_listendrop;	/* listen queue overflows */
 	u_long	tcps_rcvbadsackopt;	/* rcvd illegal SACK options */
+	u_long	tcps_sackrenege;	/* times other side reneged */
 
 	u_long	tcps_sacksbupdate;	/* times SACK scoreboard updated */
 	u_long	tcps_sacksboverflow;	/* times SACK scoreboard overflowed */
 	u_long	tcps_sacksbreused;	/* times SACK sb-block reused */
 	u_long	tcps_sacksbfailed;	/* times SACK sb update failed */
-	u_long	tcps_sacksbfast;	/* timee SACK sb-block uses cache */
+	u_long	tcps_sacksbfast;	/* times SACK sb-block uses cache */
 
 	u_long	tcps_sc_added;		/* entry added to syncache */
 	u_long	tcps_sc_retransmitted;	/* syncache entry was retransmitted */
@@ -460,7 +462,7 @@ static const int tcprexmtthresh = 3;
  * to tcp_dooptions.
  */
 struct tcpopt {
-	u_long		to_flags;	/* which options are present */
+	u_int		to_flags;	/* which options are present */
 #define	TOF_TS			0x0001	/* timestamp */
 #define	TOF_MSS			0x0010
 #define	TOF_SCALE		0x0020
@@ -608,6 +610,7 @@ SYSCTL_DECL(_net_inet_tcp);
 #endif
 
 #define TCP_DO_SACK(tp)		((tp)->t_flags & TF_SACK_PERMITTED)
+#define TCP_DO_NCR(tp)		(((tp)->t_flags & TF_NCR) && TCP_DO_SACK((tp)))
 #define TCP_SACK_BLKEND(len, thflags) \
 	((len) + (((thflags) & TH_FIN) != 0))
 
@@ -621,6 +624,7 @@ extern	int tcp_minmss;
 extern	int tcp_delack_enabled;
 extern	int path_mtu_discovery;
 
+struct ip;
 union netmsg;
 
 int	 tcp_addrcpu(in_addr_t faddr, in_port_t fport,
@@ -637,7 +641,6 @@ void	 tcp_ctloutput(union netmsg *);
 struct tcpcb *
 	 tcp_drop (struct tcpcb *, int);
 void	 tcp_drain (void);
-void	 tcp_fasttimo (void);
 void	 tcp_init (void);
 void	 tcp_thread_init (void);
 int	 tcp_input (struct mbuf **, int *, int);
@@ -653,35 +656,38 @@ void	 tcp_respond (struct tcpcb *, void *,
 	    struct tcphdr *, struct mbuf *, tcp_seq, tcp_seq, int);
 struct rtentry *
 	 tcp_rtlookup (struct in_conninfo *);
-int	 tcp_sack_bytes_below(struct scoreboard *scb, tcp_seq seq);
+int	 tcp_sack_bytes_below(const struct scoreboard *scb, tcp_seq seq);
 void	 tcp_sack_destroy(struct scoreboard *scb);
-void	 tcp_sack_cleanup(struct scoreboard *scb);
+void	 tcp_sack_discard(struct tcpcb *tp);
 void	 tcp_sack_report_cleanup(struct tcpcb *tp);
-int	 tcp_sack_ndsack_blocks(struct raw_sackblock *blocks,
+int	 tcp_sack_ndsack_blocks(const struct raw_sackblock *blocks,
 	    const int numblocks, tcp_seq snd_una);
 void	 tcp_sack_fill_report(struct tcpcb *tp, u_char *opt, u_int *plen);
 boolean_t
-	 tcp_sack_has_sacked(struct scoreboard *scb, u_int amount);
+	 tcp_sack_has_sacked(const struct scoreboard *scb, u_int amount);
 void	 tcp_sack_tcpcb_init(struct tcpcb *tp);
-uint32_t tcp_sack_compute_pipe(struct tcpcb *tp);
+uint32_t tcp_sack_compute_pipe(const struct tcpcb *tp);
 boolean_t
 	 tcp_sack_nextseg(struct tcpcb *tp, tcp_seq *nextrexmt, uint32_t *len,
 			  boolean_t *rescue);
 boolean_t
-	 tcp_sack_islost(struct scoreboard *scb, tcp_seq seq);
+	 tcp_sack_islost(const struct scoreboard *scb, tcp_seq seq);
+void	 tcp_sack_update_lostseq(struct scoreboard *scb, tcp_seq snd_una,
+	    u_int maxseg, int rxtthresh);
 #ifdef later
 void	 tcp_sack_revert_scoreboard(struct scoreboard *scb, tcp_seq snd_una,
 				    u_int maxseg);
 void	 tcp_sack_save_scoreboard(struct scoreboard *scb);
 #endif
 void	 tcp_sack_skip_sacked(struct scoreboard *scb, tcp_seq *prexmt);
+uint32_t tcp_sack_first_unsacked_len(const struct tcpcb *tp);
 void	 tcp_sack_update_scoreboard(struct tcpcb *tp, struct tcpopt *to);
 void	 tcp_save_congestion_state(struct tcpcb *tp);
 void	 tcp_revert_congestion_state(struct tcpcb *tp);
 void	 tcp_setpersist (struct tcpcb *);
 struct tcptemp *tcp_maketemplate (struct tcpcb *);
 void	 tcp_freetemplate (struct tcptemp *);
-void	 tcp_fillheaders (struct tcpcb *, void *, void *);
+void	 tcp_fillheaders (struct tcpcb *, void *, void *, boolean_t);
 struct lwkt_port *
 	 tcp_soport(struct socket *, struct sockaddr *, struct mbuf **);
 struct lwkt_port *
@@ -693,6 +699,9 @@ void	 tcp_trace (short, short, struct tcpcb *, void *, struct tcphdr *,
 void	 tcp_xmit_bandwidth_limit(struct tcpcb *tp, tcp_seq ack_seq);
 u_long	 tcp_initial_window(struct tcpcb *tp);
 void	 tcp_timer_keep_activity(struct tcpcb *tp, int thflags);
+boolean_t
+	 tcp_tso_pullup(struct mbuf **mp, int hoff, struct ip **ip, int *iphlen,
+	 	struct tcphdr **th, int *thoff);
 void	 syncache_init(void);
 void	 syncache_unreach(struct in_conninfo *, struct tcphdr *);
 int	 syncache_expand(struct in_conninfo *, struct tcphdr *,

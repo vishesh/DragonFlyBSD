@@ -95,9 +95,6 @@ static struct dev_ops amrd_ops = {
 };
 
 static devclass_t	amrd_devclass;
-#ifdef FREEBSD_4
-int			amr_disks_registered = 0;
-#endif
 
 static device_method_t amrd_methods[] = {
     DEVMETHOD(device_probe,	amrd_probe),
@@ -143,7 +140,7 @@ amrd_dump(struct dev_dump_args *ap)
     size_t length = ap->a_length;
     struct amrd_softc	*amrd_sc;
     struct amr_softc	*amr_sc;
-    int			error;
+    int			error = 0;
 
     amrd_sc = (struct amrd_softc *)dev->si_drv1;
     if (amrd_sc == NULL)
@@ -152,11 +149,11 @@ amrd_dump(struct dev_dump_args *ap)
 
     if (length > 0) {
 	int	driveno = amrd_sc->amrd_drive - amr_sc->amr_drive;
-	if ((error = amr_dump_blocks(amr_sc,driveno,offset / AMR_BLKSIZE ,(void *)virtual,(int) length / AMR_BLKSIZE  )) != 0)
-	    	return(error);
 
+	error = amr_dump_blocks(amr_sc, driveno, offset / AMR_BLKSIZE,
+	    virtual, (int)length / AMR_BLKSIZE);
     }
-    return(0);
+    return(error);
 }
 
 /*
@@ -288,12 +285,8 @@ amrd_detach(device_t dev)
 #endif
 
     devstat_remove_entry(&sc->amrd_stats);
-#ifdef FREEBSD_4
-    if (--amr_disks_registered == 0)
-	cdevsw_remove(&amrddisk_cdevsw);
-#else
     disk_destroy(&sc->amrd_disk);
-#endif
+
     return(0);
 }
 

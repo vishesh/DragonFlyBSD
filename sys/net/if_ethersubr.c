@@ -69,11 +69,13 @@
 #include <net/bpf.h>
 #include <net/ethernet.h>
 #include <net/vlan/if_vlan_ether.h>
+#include <net/vlan/if_vlan_var.h>
 #include <net/netmsg2.h>
 
 #if defined(INET) || defined(INET6)
 #include <netinet/in.h>
 #include <netinet/ip_var.h>
+#include <netinet/tcp_var.h>
 #include <netinet/if_ether.h>
 #include <netinet/ip_flow.h>
 #include <net/ipfw/ip_fw.h>
@@ -218,6 +220,7 @@ ether_output(struct ifnet *ifp, struct mbuf *m, struct sockaddr *dst,
 	M_PREPEND(m, sizeof(struct ether_header), MB_DONTWAIT);
 	if (m == NULL)
 		return (ENOBUFS);
+	m->m_pkthdr.csum_lhlen = sizeof(struct ether_header);
 	eh = mtod(m, struct ether_header *);
 	edst = eh->ether_dhost;
 
@@ -1167,11 +1170,11 @@ post_stats:
 			 * we probably should panic here!
 			 */
 			m->m_flags &= ~M_HASH;
-			ether_input_wronghash++;
+			atomic_add_long(&ether_input_wronghash, 1);
 		}
 	}
 #ifdef RSS_DEBUG
-	ether_input_requeue++;
+	atomic_add_long(&ether_input_requeue, 1);
 #endif
 	netisr_queue(isr, m);
 }
@@ -1445,13 +1448,13 @@ ether_input_pkt(struct ifnet *ifp, struct mbuf *m, const struct pktinfo *pi)
 	 */
 	if (pi != NULL && (m->m_flags & M_HASH)) {
 #ifdef RSS_DEBUG
-		ether_pktinfo_try++;
+		atomic_add_long(&ether_pktinfo_try, 1);
 #endif
 		netisr_hashcheck(pi->pi_netisr, m, pi);
 		if (m->m_flags & M_HASH) {
 			ether_dispatch(pi->pi_netisr, m);
 #ifdef RSS_DEBUG
-			ether_pktinfo_hit++;
+			atomic_add_long(&ether_pktinfo_hit, 1);
 #endif
 			logether(pkt_end, ifp);
 			return;
@@ -1460,9 +1463,9 @@ ether_input_pkt(struct ifnet *ifp, struct mbuf *m, const struct pktinfo *pi)
 #ifdef RSS_DEBUG
 	else if (ifp->if_capenable & IFCAP_RSS) {
 		if (pi == NULL)
-			ether_rss_nopi++;
+			atomic_add_long(&ether_rss_nopi, 1);
 		else
-			ether_rss_nohash++;
+			atomic_add_long(&ether_rss_nohash, 1);
 	}
 #endif
 
@@ -1592,6 +1595,51 @@ ether_demux(struct mbuf *m)
 	pmsg->base.lmsg.u.ms_result = isr;
 
 	lwkt_sendmsg(cpu_portfn(m->m_pkthdr.hash), &pmsg->base.lmsg);
+}
+
+boolean_t
+ether_tso_pullup(struct mbuf **mp, int *hoff0, struct ip **ip, int *iphlen,
+    struct tcphdr **th, int *thoff)
+{
+	struct mbuf *m = *mp;
+	struct ether_header *eh;
+	uint16_t type;
+	int hoff;
+
+	KASSERT(M_WRITABLE(m), ("not writable"));
+
+	hoff = ETHER_HDR_LEN;
+	if (m->m_len < hoff) {
+		m = m_pullup(m, hoff);
+		if (m == NULL)
+			goto failed;
+	}
+	eh = mtod(m, struct ether_header *);
+	type = eh->ether_type;
+
+	if (type == htons(ETHERTYPE_VLAN)) {
+		struct ether_vlan_header *evh;
+
+		hoff += EVL_ENCAPLEN;
+		if (m->m_len < hoff) {
+			m = m_pullup(m, hoff);
+			if (m == NULL)
+				goto failed;
+		}
+		evh = mtod(m, struct ether_vlan_header *);
+		type = evh->evl_proto;
+	}
+	KASSERT(type == htons(ETHERTYPE_IP), ("not IP %d", ntohs(type)));
+
+	*mp = m;
+	*hoff0 = hoff;
+	return tcp_tso_pullup(mp, hoff, ip, iphlen, th, thoff);
+
+failed:
+	if (m != NULL)
+		m_freem(m);
+	*mp = NULL;
+	return FALSE;
 }
 
 MODULE_VERSION(ether, 1);

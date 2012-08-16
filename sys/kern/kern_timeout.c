@@ -70,7 +70,6 @@
  *
  *	From: @(#)kern_clock.c	8.5 (Berkeley) 1/21/94
  * $FreeBSD: src/sys/kern/kern_timeout.c,v 1.59.2.1 2001/11/13 18:24:52 archie Exp $
- * $DragonFly: src/sys/kern/kern_timeout.c,v 1.27 2007/11/14 18:27:52 swildner Exp $
  */
 /*
  * DRAGONFLY BGL STATUS
@@ -133,7 +132,6 @@ typedef struct softclock_pcpu *softclock_pcpu_t;
  */
 static MALLOC_DEFINE(M_CALLOUT, "callout", "callout structures");
 static int callwheelsize;
-static int callwheelbits;
 static int callwheelmask;
 static struct softclock_pcpu softclock_pcpu_ary[MAXCPU];
 
@@ -149,11 +147,8 @@ swi_softclock_setup(void *arg)
 	 * Figure out how large a callwheel we need.  It must be a power of 2.
 	 */
 	callwheelsize = 1;
-	callwheelbits = 0;
-	while (callwheelsize < ncallout) {
+	while (callwheelsize < ncallout)
 		callwheelsize <<= 1;
-		++callwheelbits;
-	}
 	callwheelmask = callwheelsize - 1;
 
 	/*
@@ -383,6 +378,54 @@ callout_reset(struct callout *c, int to_ticks, void (*ftn)(void *),
 	TAILQ_INSERT_TAIL(&sc->callwheel[c->c_time & callwheelmask], 
 			  c, c_links.tqe);
 	crit_exit_gd(gd);
+}
+
+#ifdef SMP
+
+struct callout_remote_arg {
+	struct callout	*c;
+	void		(*ftn)(void *);
+	void		*arg;
+	int		to_ticks;
+};
+
+static void
+callout_reset_ipi(void *arg)
+{
+	struct callout_remote_arg *rmt = arg;
+
+	callout_reset(rmt->c, rmt->to_ticks, rmt->ftn, rmt->arg);
+}
+
+#endif
+
+void
+callout_reset_bycpu(struct callout *c, int to_ticks, void (*ftn)(void *),
+    void *arg, int cpuid)
+{
+	KASSERT(cpuid >= 0 && cpuid < ncpus, ("invalid cpuid %d", cpuid));
+
+#ifndef SMP
+	callout_reset(c, to_ticks, ftn, arg);
+#else
+	if (cpuid == mycpuid) {
+		callout_reset(c, to_ticks, ftn, arg);
+	} else {
+		struct globaldata *target_gd;
+		struct callout_remote_arg rmt;
+		int seq;
+
+		rmt.c = c;
+		rmt.ftn = ftn;
+		rmt.arg = arg;
+		rmt.to_ticks = to_ticks;
+
+		target_gd = globaldata_find(cpuid);
+
+		seq = lwkt_send_ipiq(target_gd, callout_reset_ipi, &rmt);
+		lwkt_wait_ipiq(target_gd, seq);
+	}
+#endif
 }
 
 /*

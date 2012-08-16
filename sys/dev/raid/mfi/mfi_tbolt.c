@@ -542,7 +542,7 @@ int mfi_tbolt_reset(struct mfi_softc *sc)
 				sc->issuepend_done = 0;
 				sc->MFA_enabled = 0;
 				sc->last_reply_idx = 0;
-				mfi_process_fw_state_chg_isr((void *) sc);
+				mfi_process_fw_state_chg_isr(sc);
 			}
 			lockmgr(&sc->mfi_io_lock, LK_RELEASE);
 			return 0;
@@ -1130,7 +1130,7 @@ mfi_tbolt_build_mpt_cmd(struct mfi_softc *sc, struct mfi_command *cmd)
 	if (!req_desc)
 		return NULL;
 
-	bzero(req_desc, sizeof(req_desc));
+	bzero(req_desc, sizeof(*req_desc));
 	req_desc->header.RequestFlags = (MPI2_REQ_DESCRIPT_FLAGS_SCSI_IO <<
 	    MFI_REQ_DESCRIPT_FLAGS_TYPE_SHIFT);
 	req_desc->header.SMID = index;

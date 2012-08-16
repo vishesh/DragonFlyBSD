@@ -2070,7 +2070,7 @@ hpt_attach(device_t dev)
 	ccb->csa.event_enable = AC_LOST_DEVICE;
 	ccb->csa.callback = hpt_async;
 	ccb->csa.callback_arg = hpt_vsim;
-	xpt_action((union ccb *)ccb);
+	xpt_action(ccb);
 	kfree(ccb, M_DEVBUF);
 
 	callout_init(&pAdapter->event_timer_connect);
@@ -2362,6 +2362,7 @@ hpt_action(struct cam_sim *sim, union ccb *ccb)
 			cpi->transport_version = 2;
 			cpi->protocol = PROTO_SCSI;
 			cpi->protocol_version = SCSI_REV_2;
+			cpi->maxio = HPTMV_DFLTPHYS;
 			cpi->ccb_h.status = CAM_REQ_CMP;
 			xpt_done(ccb);
 			break;

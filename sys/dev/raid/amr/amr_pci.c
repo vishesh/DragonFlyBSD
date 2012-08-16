@@ -116,6 +116,7 @@ static driver_t amr_pci_driver = {
 
 static devclass_t	amr_devclass;
 DRIVER_MODULE(amr, pci, amr_pci_driver, amr_devclass, NULL, NULL);
+MODULE_VERSION(amr, 1);
 MODULE_DEPEND(amr, pci, 1, 1, 1);
 MODULE_DEPEND(amr, cam, 1, 1, 1);
 
@@ -260,7 +261,7 @@ amr_pci_attach(device_t dev)
 	goto out;
     }
     if (bus_setup_intr(sc->amr_dev, sc->amr_irq,
-	0, amr_pci_intr,
+	INTR_MPSAFE, amr_pci_intr,
 	sc, &sc->amr_intr, NULL)) {
         device_printf(sc->amr_dev, "can't set up interrupt\n");
 	goto out;
@@ -593,7 +594,8 @@ amr_sglist_map(struct amr_softc *sc)
      *			that does't seem to work.
      */
 retry:
-    error = bus_dmamem_alloc(sc->amr_sg_dmat, (void **)&p, BUS_DMA_NOWAIT, &sc->amr_sg_dmamap);
+    error = bus_dmamem_alloc(sc->amr_sg_dmat, &p, BUS_DMA_NOWAIT,
+			     &sc->amr_sg_dmamap);
     if (error) {
 	device_printf(sc->amr_dev, "can't allocate s/g table\n");
 	return(ENOMEM);
@@ -648,7 +650,7 @@ amr_setup_mbox(struct amr_softc *sc)
      * Allocate the mailbox structure and permanently map it into
      * controller-visible space.
      */
-    error = bus_dmamem_alloc(sc->amr_mailbox_dmat, (void **)&p, BUS_DMA_NOWAIT,
+    error = bus_dmamem_alloc(sc->amr_mailbox_dmat, &p, BUS_DMA_NOWAIT,
 			     &sc->amr_mailbox_dmamap);
     if (error) {
 	device_printf(sc->amr_dev, "can't allocate mailbox memory\n");

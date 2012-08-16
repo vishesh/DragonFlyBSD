@@ -251,6 +251,8 @@ tmpfs_mount(struct mount *mp, char *path, caddr_t data, struct ucred *cred)
 	    tmpfs_node_init, tmpfs_node_fini,
 	    &tmp->tm_node_zone_malloc_args);
 
+	tmp->tm_ino = 2;
+
 	/* Allocate the root node. */
 	error = tmpfs_alloc_node(tmp, VDIR, root_uid, root_gid,
 				 root_mode & ALLPERMS, NULL, NULL,
@@ -349,8 +351,8 @@ tmpfs_unmount(struct mount *mp, int mntflags)
 		if (node->tn_type == VDIR) {
 			struct tmpfs_dirent *de;
 
-			while (!TAILQ_EMPTY(&node->tn_dir.tn_dirhead)) {
-				de = TAILQ_FIRST(&node->tn_dir.tn_dirhead);
+			while (!RB_EMPTY(&node->tn_dir.tn_dirtree)) {
+				de = RB_FIRST(tmpfs_dirtree, &node->tn_dir.tn_dirtree);
 				tmpfs_dir_detach(node, de);
 				tmpfs_free_dirent(tmp, de);
 				node->tn_size -= sizeof(struct tmpfs_dirent);

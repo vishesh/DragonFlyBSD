@@ -177,6 +177,15 @@ SYSCTL_INT(_net_inet_tcp, OID_AUTO, abc, CTLFLAG_RW,
     "TCP Appropriate Byte Counting (RFC 3465)");
 
 /*
+ * The following value actually takes range [25ms, 250ms],
+ * given that most modern systems use 1ms ~ 10ms as the unit
+ * of timestamp option.
+ */
+static u_int tcp_paws_tolerance = 25;
+SYSCTL_UINT(_net_inet_tcp, OID_AUTO, paws_tolerance, CTLFLAG_RW,
+    &tcp_paws_tolerance, 0, "RFC1323 PAWS tolerance");
+
+/*
  * Define as tunable for easy testing with SACK on and off.
  * Warning:  do not change setting in the middle of an existing active TCP flow,
  *   else strange things might happen to that flow.
@@ -197,7 +206,11 @@ int tcp_aggressive_rescuesack = 0;
 SYSCTL_INT(_net_inet_tcp, OID_AUTO, rescuesack_agg, CTLFLAG_RW,
     &tcp_aggressive_rescuesack, 0, "Aggressive rescue retransmission for SACK");
 
-int tcp_do_rfc3517bis = 0;
+static int tcp_force_sackrxt = 1;
+SYSCTL_INT(_net_inet_tcp, OID_AUTO, force_sackrxt, CTLFLAG_RW,
+    &tcp_force_sackrxt, 0, "Allowed forced SACK retransmit burst");
+
+int tcp_do_rfc3517bis = 1;
 SYSCTL_INT(_net_inet_tcp, OID_AUTO, rfc3517bis, CTLFLAG_RW,
     &tcp_do_rfc3517bis, 0, "Enable RFC3517 update");
 
@@ -236,7 +249,7 @@ int tcp_autorcvbuf_max = 2*1024*1024;
 SYSCTL_INT(_net_inet_tcp, OID_AUTO, recvbuf_max, CTLFLAG_RW,
     &tcp_autorcvbuf_max, 0, "Max size of automatic receive buffer");
 
-int tcp_sosend_agglim = 2;
+int tcp_sosend_agglim = 3;
 SYSCTL_INT(_net_inet_tcp, OID_AUTO, sosend_agglim, CTLFLAG_RW,
     &tcp_sosend_agglim, 0, "TCP sosend mbuf aggregation limit");
 
@@ -256,10 +269,11 @@ static int	 tcp_reass(struct tcpcb *, struct tcphdr *, int *,
 		     struct mbuf *);
 static void	 tcp_xmit_timer(struct tcpcb *, int, tcp_seq);
 static void	 tcp_newreno_partial_ack(struct tcpcb *, struct tcphdr *, int);
-static void	 tcp_sack_rexmt(struct tcpcb *, struct tcphdr *);
+static void	 tcp_sack_rexmt(struct tcpcb *, boolean_t);
 static boolean_t tcp_sack_limitedxmit(struct tcpcb *);
 static int	 tcp_rmx_msl(const struct tcpcb *);
 static void	 tcp_established(struct tcpcb *);
+static boolean_t tcp_recv_dupack(struct tcpcb *, tcp_seq, u_int);
 
 /* Neighbor Discovery, Neighbor Unreachability Detection Upper layer hint. */
 #ifdef INET6
@@ -299,6 +313,63 @@ do { \
      tp->t_dupacks + 1 >= iceildiv(ownd, tp->t_maxseg) && \
      (!TCP_DO_SACK(tp) || ownd <= tp->t_maxseg || \
       tcp_sack_has_sacked(&tp->scb, ownd - tp->t_maxseg)))
+
+/*
+ * Returns TRUE, if this segment can be merged with the last
+ * pending segment in the reassemble queue and this segment
+ * does not overlap with the pending segment immediately
+ * preceeding the last pending segment.
+ */
+static __inline boolean_t
+tcp_paws_canreasslast(const struct tcpcb *tp, const struct tcphdr *th, int tlen)
+{
+	const struct tseg_qent *last, *prev;
+
+	last = TAILQ_LAST(&tp->t_segq, tsegqe_head);
+	if (last == NULL)
+		return FALSE;
+
+	/* This segment comes immediately after the last pending segment */
+	if (last->tqe_th->th_seq + last->tqe_len == th->th_seq) {
+		if (last->tqe_th->th_flags & TH_FIN) {
+			/* No segments should follow segment w/ FIN */
+			return FALSE;
+		}
+		return TRUE;
+	}
+
+	if (th->th_seq + tlen != last->tqe_th->th_seq)
+		return FALSE;
+	/* This segment comes immediately before the last pending segment */
+
+	prev = TAILQ_PREV(last, tsegqe_head, tqe_q);
+	if (prev == NULL) {
+		/*
+		 * No pending preceeding segment, we assume this segment
+		 * could be reassembled.
+		 */
+		return TRUE;
+	}
+
+	/* This segment does not overlap with the preceeding segment */
+	if (SEQ_GEQ(th->th_seq, prev->tqe_th->th_seq + prev->tqe_len))
+		return TRUE;
+
+	return FALSE;
+}
+
+static __inline void
+tcp_ncr_update_rxtthresh(struct tcpcb *tp)
+{
+	int old_rxtthresh = tp->t_rxtthresh;
+	uint32_t ownd = tp->snd_max - tp->snd_una;
+
+	tp->t_rxtthresh = max(3, ((ownd / tp->t_maxseg) >> 1));
+	if (tp->t_rxtthresh != old_rxtthresh) {
+		tcp_sack_update_lostseq(&tp->scb, tp->snd_una,
+		    tp->t_maxseg, tp->t_rxtthresh);
+	}
+}
 
 static int
 tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
@@ -344,10 +415,13 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 	}
 	atomic_add_int(&tcp_reass_qsize, 1);
 
+	if (th->th_flags & TH_FIN)
+		tp->t_flags |= TF_QUEDFIN;
+
 	/*
 	 * Find a segment which begins after this one does.
 	 */
-	LIST_FOREACH(q, &tp->t_segq, tqe_q) {
+	TAILQ_FOREACH(q, &tp->t_segq, tqe_q) {
 		if (SEQ_GT(q->tqe_th->th_seq, th->th_seq))
 			break;
 		p = q;
@@ -369,6 +443,9 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 			/* enclosing block starts w/ preceding segment */
 			tp->encloseblk.rblk_start = p->tqe_th->th_seq;
 			if (i >= *tlenp) {
+				if (th->th_flags & TH_FIN)
+					p->tqe_th->th_flags |= TH_FIN;
+
 				/* preceding encloses incoming segment */
 				tp->encloseblk.rblk_end = TCP_SACK_BLKEND(
 				    p->tqe_th->th_seq + p->tqe_len,
@@ -430,8 +507,11 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 			break;
 		}
 
-		nq = LIST_NEXT(q, tqe_q);
-		LIST_REMOVE(q, tqe_q);
+		if (q->tqe_th->th_flags & TH_FIN)
+			th->th_flags |= TH_FIN;
+
+		nq = TAILQ_NEXT(q, tqe_q);
+		TAILQ_REMOVE(&tp->t_segq, q, tqe_q);
 		m_freem(q->tqe_m);
 		kfree(q, M_TSEGQ);
 		atomic_add_int(&tcp_reass_qsize, -1);
@@ -445,12 +525,14 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 
 	/* check if can coalesce with following segment */
 	if (q != NULL && (th->th_seq + *tlenp == q->tqe_th->th_seq)) {
-		tcp_seq tend = te->tqe_th->th_seq + te->tqe_len;
-		tcp_seq tend_sack = TCP_SACK_BLKEND(tend, te->tqe_th->th_flags);
+		tcp_seq tend_sack;
 
 		te->tqe_len += q->tqe_len;
 		if (q->tqe_th->th_flags & TH_FIN)
 			te->tqe_th->th_flags |= TH_FIN;
+		tend_sack = TCP_SACK_BLKEND(te->tqe_th->th_seq + te->tqe_len,
+		    te->tqe_th->th_flags);
+
 		m_cat(te->tqe_m, q->tqe_m);
 		tp->encloseblk.rblk_end = tend_sack;
 		/*
@@ -459,16 +541,18 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 		 */
 		if (!(tp->sack_flags & TSACK_F_DUPSEG))
 			tp->reportblk.rblk_end = tend_sack;
-		LIST_REMOVE(q, tqe_q);
+		TAILQ_REMOVE(&tp->t_segq, q, tqe_q);
 		kfree(q, M_TSEGQ);
 		atomic_add_int(&tcp_reass_qsize, -1);
 	}
 
 	if (p == NULL) {
-		LIST_INSERT_HEAD(&tp->t_segq, te, tqe_q);
+		TAILQ_INSERT_HEAD(&tp->t_segq, te, tqe_q);
 	} else {
 		/* check if can coalesce with preceding segment */
 		if (p->tqe_th->th_seq + p->tqe_len == th->th_seq) {
+			if (te->tqe_th->th_flags & TH_FIN)
+				p->tqe_th->th_flags |= TH_FIN;
 			p->tqe_len += te->tqe_len;
 			m_cat(p->tqe_m, te->tqe_m);
 			tp->encloseblk.rblk_start = p->tqe_th->th_seq;
@@ -481,7 +565,7 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 			kfree(te, M_TSEGQ);
 			atomic_add_int(&tcp_reass_qsize, -1);
 		} else {
-			LIST_INSERT_AFTER(p, te, tqe_q);
+			TAILQ_INSERT_AFTER(&tp->t_segq, p, te, tqe_q);
 		}
 	}
 
@@ -492,7 +576,7 @@ present:
 	 */
 	if (!TCPS_HAVEESTABLISHED(tp->t_state))
 		return (0);
-	q = LIST_FIRST(&tp->t_segq);
+	q = TAILQ_FIRST(&tp->t_segq);
 	if (q == NULL || q->tqe_th->th_seq != tp->rcv_nxt)
 		return (0);
 	tp->rcv_nxt += q->tqe_len;
@@ -503,9 +587,9 @@ present:
 	/* no enclosing block to report since ACK advanced */
 	tp->sack_flags &= ~TSACK_F_ENCLOSESEG;
 	flags = q->tqe_th->th_flags & TH_FIN;
-	LIST_REMOVE(q, tqe_q);
-	KASSERT(LIST_EMPTY(&tp->t_segq) ||
-		LIST_FIRST(&tp->t_segq)->tqe_th->th_seq != tp->rcv_nxt,
+	TAILQ_REMOVE(&tp->t_segq, q, tqe_q);
+	KASSERT(TAILQ_EMPTY(&tp->t_segq) ||
+		TAILQ_FIRST(&tp->t_segq)->tqe_th->th_seq != tp->rcv_nxt,
 		("segment not coalesced"));
 	if (so->so_state & SS_CANTRCVMORE) {
 		m_freem(q->tqe_m);
@@ -570,7 +654,9 @@ tcp_input(struct mbuf **mp, int *offp, int proto)
 	int thflags;
 	struct socket *so = NULL;
 	int todrop, acked;
-	boolean_t ourfinisacked, needoutput = FALSE;
+	boolean_t ourfinisacked, needoutput = FALSE, delayed_dupack = FALSE;
+	tcp_seq th_dupack = 0; /* XXX gcc warning */
+	u_int to_flags = 0; /* XXX gcc warning */
 	u_long tiwin;
 	int recvwin;
 	struct tcpopt to;		/* options in this segment */
@@ -1276,7 +1362,7 @@ after_listen:
 			}
 		} else if (tiwin == tp->snd_wnd &&
 		    th->th_ack == tp->snd_una &&
-		    LIST_EMPTY(&tp->t_segq) &&
+		    TAILQ_EMPTY(&tp->t_segq) &&
 		    tlen <= ssb_space(&so->so_rcv)) {
 			u_long newsize = 0;	/* automatic sockbuf scaling */
 			/*
@@ -1655,7 +1741,6 @@ after_listen:
 	 */
 	if ((to.to_flags & TOF_TS) && tp->ts_recent != 0 &&
 	    TSTMP_LT(to.to_tsval, tp->ts_recent)) {
-
 		/* Check to see if ts_recent is over 24 days old.  */
 		if ((int)(ticks - tp->ts_recent_age) > TCP_PAWS_IDLE) {
 			/*
@@ -1670,6 +1755,39 @@ after_listen:
 			 * dropped when ts_recent is old.
 			 */
 			tp->ts_recent = 0;
+		} else if (tcp_paws_tolerance && tlen != 0 &&
+		    tp->t_state == TCPS_ESTABLISHED &&
+		    (thflags & (TH_SYN|TH_FIN|TH_RST|TH_URG|TH_ACK)) == TH_ACK&&
+		    !(tp->t_flags & (TF_NEEDSYN | TF_NEEDFIN)) &&
+		    th->th_ack == tp->snd_una &&
+		    tiwin == tp->snd_wnd &&
+		    TSTMP_GEQ(to.to_tsval + tcp_paws_tolerance, tp->ts_recent)&&
+		    (th->th_seq == tp->rcv_nxt ||
+		     (SEQ_GT(th->th_seq, tp->rcv_nxt) && 
+		      tcp_paws_canreasslast(tp, th, tlen)))) {
+			/*
+			 * This tends to prevent valid new segments from being
+			 * dropped by the reordered segments sent by the fast
+			 * retransmission algorithm on the sending side, i.e.
+			 * the fast retransmitted segment w/ larger timestamp
+			 * arrives earlier than the previously sent new segments
+			 * w/ smaller timestamp.
+			 *
+			 * If following conditions are met, the segment is
+			 * accepted:
+			 * - The segment contains data
+			 * - The connection is established
+			 * - The header does not contain important flags
+			 * - SYN or FIN is not needed
+			 * - It does not acknowledge new data
+			 * - Receive window is not changed
+			 * - The timestamp is within "acceptable" range
+			 * - The new segment is what we are expecting or
+			 *   the new segment could be merged w/ the last
+			 *   pending segment on the reassemble queue
+			 */
+			tcpstat.tcps_pawsaccept++;
+			tcpstat.tcps_pawsdrop++;
 		} else {
 			tcpstat.tcps_rcvduppack++;
 			tcpstat.tcps_rcvdupbyte += tlen;
@@ -1903,205 +2021,57 @@ after_listen:
 	case TCPS_TIME_WAIT:
 
 		if (SEQ_LEQ(th->th_ack, tp->snd_una)) {
+			boolean_t maynotdup = FALSE;
+
 			if (TCP_DO_SACK(tp))
 				tcp_sack_update_scoreboard(tp, &to);
+
+			if (tlen != 0 || tiwin != tp->snd_wnd ||
+			    ((thflags & TH_FIN) && !(tp->t_flags & TF_SAWFIN)))
+				maynotdup = TRUE;
+
 			if (!tcp_callout_active(tp, tp->tt_rexmt) ||
 			    th->th_ack != tp->snd_una) {
-				if (tlen == 0 && tiwin == tp->snd_wnd)
+				if (!maynotdup)
 					tcpstat.tcps_rcvdupack++;
 				tp->t_dupacks = 0;
 				break;
 			}
-			if (tlen != 0 || tiwin != tp->snd_wnd) {
+
+#define DELAY_DUPACK \
+do { \
+	delayed_dupack = TRUE; \
+	th_dupack = th->th_ack; \
+	to_flags = to.to_flags; \
+} while (0)
+			if (maynotdup) {
 				if (!tcp_do_rfc3517bis ||
 				    !TCP_DO_SACK(tp) ||
 				    (to.to_flags &
 				     (TOF_SACK | TOF_SACK_REDUNDANT))
 				     != TOF_SACK) {
 					tp->t_dupacks = 0;
-					break;
-				}
-				/*
-				 * Update window information.
-				 */
-				if (tiwin != tp->snd_wnd &&
-				    acceptable_window_update(tp, th, tiwin)) {
-					/* keep track of pure window updates */
-					if (tlen == 0 &&
-					    tp->snd_wl2 == th->th_ack &&
-					    tiwin > tp->snd_wnd)
-						tcpstat.tcps_rcvwinupd++;
-					tp->snd_wnd = tiwin;
-					tp->snd_wl1 = th->th_seq;
-					tp->snd_wl2 = th->th_ack;
-					if (tp->snd_wnd > tp->max_sndwnd)
-						tp->max_sndwnd = tp->snd_wnd;
-				}
-			}
-			tcpstat.tcps_rcvdupack++;
-
-			/*
-			 * We have outstanding data (other than
-			 * a window probe), this is a completely
-			 * duplicate ack (ie, window info didn't
-			 * change), the ack is the biggest we've
-			 * seen and we've seen exactly our rexmt
-			 * threshhold of them, so assume a packet
-			 * has been dropped and retransmit it.
-			 * Kludge snd_nxt & the congestion
-			 * window so we send only this one
-			 * packet.
-			 */
-			if (IN_FASTRECOVERY(tp)) {
-				if (TCP_DO_SACK(tp)) {
-					/* No artifical cwnd inflation. */
-					tcp_sack_rexmt(tp, th);
 				} else {
-					/*
-					 * Dup acks mean that packets
-					 * have left the network
-					 * (they're now cached at the
-					 * receiver) so bump cwnd by
-					 * the amount in the receiver
-					 * to keep a constant cwnd
-					 * packets in the network.
-					 */
-					tp->snd_cwnd += tp->t_maxseg;
-					tcp_output(tp);
+					DELAY_DUPACK;
 				}
-			} else if (SEQ_LT(th->th_ack, tp->snd_recover)) {
-				tp->t_dupacks = 0;
 				break;
-			} else if (tcp_ignore_redun_dsack && TCP_DO_SACK(tp) &&
-			    (to.to_flags & (TOF_DSACK | TOF_SACK_REDUNDANT)) ==
-			    (TOF_DSACK | TOF_SACK_REDUNDANT)) {
-				/*
-				 * If the ACK carries DSACK and other
-				 * SACK blocks carry information that
-				 * we have already known, don't count
-				 * this ACK as duplicate ACK.  This
-				 * prevents spurious early retransmit
-				 * and fast retransmit.  This also
-				 * meets the requirement of RFC3042
-				 * that new segments should not be sent
-				 * if the SACK blocks do not contain
-				 * new information (XXX we actually
-				 * loosen the requirment that only DSACK
-				 * is checked here).
-				 *
-				 * This kind of ACKs are usually sent
-				 * after spurious retransmit.
-				 */
-				/* Do nothing; don't change t_dupacks */
-			} else if (++tp->t_dupacks == tp->t_rxtthresh) {
-				tcp_seq old_snd_nxt;
-				u_int win;
-
-fastretransmit:
-				if (tcp_do_eifel_detect &&
-				    (tp->t_flags & TF_RCVD_TSTMP)) {
-					tcp_save_congestion_state(tp);
-					tp->rxt_flags |= TRXT_F_FASTREXMT;
-				}
-				/*
-				 * We know we're losing at the current
-				 * window size, so do congestion avoidance:
-				 * set ssthresh to half the current window
-				 * and pull our congestion window back to the
-				 * new ssthresh.
-				 */
-				win = min(tp->snd_wnd, tp->snd_cwnd) / 2 /
-				    tp->t_maxseg;
-				if (win < 2)
-					win = 2;
-				tp->snd_ssthresh = win * tp->t_maxseg;
-				ENTER_FASTRECOVERY(tp);
-				tp->snd_recover = tp->snd_max;
-				tcp_callout_stop(tp, tp->tt_rexmt);
-				tp->t_rtttime = 0;
-				old_snd_nxt = tp->snd_nxt;
-				tp->snd_nxt = th->th_ack;
-				tp->snd_cwnd = tp->t_maxseg;
-				tcp_output(tp);
-				++tcpstat.tcps_sndfastrexmit;
-				tp->snd_cwnd = tp->snd_ssthresh;
-				tp->rexmt_high = tp->snd_nxt;
-				tp->sack_flags &= ~TSACK_F_SACKRESCUED;
-				if (SEQ_GT(old_snd_nxt, tp->snd_nxt))
-					tp->snd_nxt = old_snd_nxt;
-				KASSERT(tp->snd_limited <= 2,
-				    ("tp->snd_limited too big"));
-				if (TCP_DO_SACK(tp))
-					tcp_sack_rexmt(tp, th);
-				else
-					tp->snd_cwnd += tp->t_maxseg *
-					    (tp->t_dupacks - tp->snd_limited);
-			} else if (tcp_do_rfc3517bis && TCP_DO_SACK(tp)) {
-				if (tcp_rfc3517bis_rxt &&
-				    tcp_sack_islost(&tp->scb, tp->snd_una))
-					goto fastretransmit;
-				if (tcp_do_limitedtransmit) {
-					/* outstanding data */
-					uint32_t ownd =
-					    tp->snd_max - tp->snd_una;
-
-					if (!tcp_sack_limitedxmit(tp) &&
-					    need_early_retransmit(tp, ownd)) {
-						++tcpstat.tcps_sndearlyrexmit;
-						tp->rxt_flags |=
-						    TRXT_F_EARLYREXMT;
-						goto fastretransmit;
-					}
-				}
-			} else if (tcp_do_limitedtransmit) {
-				u_long oldcwnd = tp->snd_cwnd;
-				tcp_seq oldsndmax = tp->snd_max;
-				tcp_seq oldsndnxt = tp->snd_nxt;
-				/* outstanding data */
-				uint32_t ownd = tp->snd_max - tp->snd_una;
-				u_int sent;
-
-				KASSERT(tp->t_dupacks == 1 ||
-					tp->t_dupacks == 2,
-				    ("dupacks not 1 or 2"));
-				if (tp->t_dupacks == 1)
-					tp->snd_limited = 0;
-				tp->snd_nxt = tp->snd_max;
-				tp->snd_cwnd = ownd +
-				    (tp->t_dupacks - tp->snd_limited) *
-				    tp->t_maxseg;
-				tcp_output(tp);
-
-				if (SEQ_LT(oldsndnxt, oldsndmax)) {
-					KASSERT(SEQ_GEQ(oldsndnxt, tp->snd_una),
-					    ("snd_una moved in other threads"));
-					tp->snd_nxt = oldsndnxt;
-				}
-				tp->snd_cwnd = oldcwnd;
-				sent = tp->snd_max - oldsndmax;
-				if (sent > tp->t_maxseg) {
-					KASSERT((tp->t_dupacks == 2 &&
-						 tp->snd_limited == 0) ||
-						(sent == tp->t_maxseg + 1 &&
-						 tp->t_flags & TF_SENTFIN),
-					    ("sent too much"));
-					KASSERT(sent <= tp->t_maxseg * 2,
-					    ("sent too many segments"));
-					tp->snd_limited = 2;
-					tcpstat.tcps_sndlimited += 2;
-				} else if (sent > 0) {
-					++tp->snd_limited;
-					++tcpstat.tcps_sndlimited;
-				} else if (need_early_retransmit(tp, ownd)) {
-					++tcpstat.tcps_sndearlyrexmit;
-					tp->rxt_flags |= TRXT_F_EARLYREXMT;
-					goto fastretransmit;
-				}
 			}
-			if (tlen != 0)
+			if ((thflags & TH_FIN) && !(tp->t_flags & TF_QUEDFIN)) {
+				/*
+				 * This could happen, if the reassemable
+				 * queue overflew or was drained.  Don't
+				 * drop this FIN here; defer the duplicated
+				 * ACK processing until this FIN gets queued.
+				 */
+				DELAY_DUPACK;
 				break;
-			else
+			}
+#undef DELAY_DUPACK
+
+			if (tcp_recv_dupack(tp, th->th_ack, to.to_flags))
 				goto drop;
+			else
+				break;
 		}
 
 		KASSERT(SEQ_GT(th->th_ack, tp->snd_una), ("th_ack <= snd_una"));
@@ -2255,7 +2225,8 @@ process_ACK:
 			} else {
 				if (TCP_DO_SACK(tp)) {
 					tp->snd_max_rexmt = tp->snd_max;
-					tcp_sack_rexmt(tp, th);
+					tcp_sack_rexmt(tp,
+					    tp->snd_una == tp->rexmt_high);
 				} else {
 					tcp_newreno_partial_ack(tp, th, acked);
 				}
@@ -2460,6 +2431,8 @@ dodata:							/* XXX */
 	 * connection then we just ignore the text.
 	 */
 	if ((tlen || (thflags & TH_FIN)) && !TCPS_HAVERCVDFIN(tp->t_state)) {
+		if (thflags & TH_FIN)
+			tp->t_flags |= TF_SAWFIN;
 		m_adj(m, drop_hdrlen);	/* delayed header drop */
 		/*
 		 * Insert segment which includes th into TCP reassembly queue
@@ -2474,8 +2447,10 @@ dodata:							/* XXX */
 		 * fast retransmit can work).
 		 */
 		if (th->th_seq == tp->rcv_nxt &&
-		    LIST_EMPTY(&tp->t_segq) &&
+		    TAILQ_EMPTY(&tp->t_segq) &&
 		    TCPS_HAVEESTABLISHED(tp->t_state)) {
+			if (thflags & TH_FIN)
+				tp->t_flags |= TF_QUEDFIN;
 			if (DELAY_ACK(tp)) {
 				tcp_callout_reset(tp, tp->tt_delack,
 				    tcp_delacktime, tcp_timer_delack);
@@ -2587,6 +2562,12 @@ dodata:							/* XXX */
 	if (so->so_options & SO_DEBUG)
 		tcp_trace(TA_INPUT, ostate, tp, tcp_saveipgen, &tcp_savetcp, 0);
 #endif
+
+	/*
+	 * Delayed duplicated ACK processing
+	 */
+	if (delayed_dupack && tcp_recv_dupack(tp, th_dupack, to_flags))
+		needoutput = FALSE;
 
 	/*
 	 * Return any desired output.
@@ -2944,8 +2925,7 @@ tcp_xmit_timer(struct tcpcb *tp, int rtt, tcp_seq ack)
 			 * and RTTVAR used to calculate t_rxtcur_prev
 			 * resulted in a value less than t_rttmin.  So
 			 * simply increasing SRTT by tcp_eifel_rtoinc when
-			 * preparing for the Eifel response in
-			 * tcp_save_congestion_state() could not ensure
+			 * preparing for the Eifel response could not ensure
 			 * that the new RTO will be tcp_eifel_rtoinc greater
 			 * t_rxtcur_prev.
 			 */
@@ -3240,18 +3220,32 @@ tcp_newreno_partial_ack(struct tcpcb *tp, struct tcphdr *th, int acked)
  * except when retransmitting snd_una.
  */
 static void
-tcp_sack_rexmt(struct tcpcb *tp, struct tcphdr *th)
+tcp_sack_rexmt(struct tcpcb *tp, boolean_t force)
 {
 	tcp_seq old_snd_nxt = tp->snd_nxt;
 	u_long ocwnd = tp->snd_cwnd;
 	uint32_t pipe;
 	int nseg = 0;		/* consecutive new segments */
 	int nseg_rexmt = 0;	/* retransmitted segments */
+	int maxrexmt = 0;
 #define MAXBURST 4		/* limit burst of new packets on partial ack */
+
+	if (force) {
+		uint32_t unsacked = tcp_sack_first_unsacked_len(tp);
+
+		/*
+		 * Try to fill the first hole in the receiver's
+		 * reassemble queue.
+		 */
+		maxrexmt = howmany(unsacked, tp->t_maxseg);
+		if (maxrexmt > tcp_force_sackrxt)
+			maxrexmt = tcp_force_sackrxt;
+	}
 
 	tp->t_rtttime = 0;
 	pipe = tcp_sack_compute_pipe(tp);
-	while ((tcp_seq_diff_t)(ocwnd - pipe) >= (tcp_seq_diff_t)tp->t_maxseg &&
+	while (((tcp_seq_diff_t)(ocwnd - pipe) >= (tcp_seq_diff_t)tp->t_maxseg
+	        || (force && nseg_rexmt < maxrexmt && nseg == 0)) &&
 	    (!tcp_do_smartsack || nseg < MAXBURST)) {
 		tcp_seq old_snd_max, old_rexmt_high, nextrexmt;
 		uint32_t sent, seglen;
@@ -3259,7 +3253,7 @@ tcp_sack_rexmt(struct tcpcb *tp, struct tcphdr *th)
 		int error;
 
 		old_rexmt_high = tp->rexmt_high;
-	    	if (!tcp_sack_nextseg(tp, &nextrexmt, &seglen, &rescue)) {
+		if (!tcp_sack_nextseg(tp, &nextrexmt, &seglen, &rescue)) {
 			tp->rexmt_high = old_rexmt_high;
 			break;
 		}
@@ -3287,6 +3281,7 @@ tcp_sack_rexmt(struct tcpcb *tp, struct tcphdr *th)
 		old_snd_max = tp->snd_max;
 		if (nextrexmt == tp->snd_una)
 			tcp_callout_stop(tp, tp->tt_rexmt);
+		tp->t_flags |= TF_XMITNOW;
 		error = tcp_output(tp);
 		if (error != 0) {
 			tp->rexmt_high = old_rexmt_high;
@@ -3323,34 +3318,36 @@ tcp_sack_rexmt(struct tcpcb *tp, struct tcphdr *th)
 	tp->snd_cwnd = ocwnd;
 }
 
+/*
+ * Return TRUE, if some new segments are sent
+ */
 static boolean_t
 tcp_sack_limitedxmit(struct tcpcb *tp)
 {
 	tcp_seq oldsndnxt = tp->snd_nxt;
 	tcp_seq oldsndmax = tp->snd_max;
 	u_long ocwnd = tp->snd_cwnd;
-	uint32_t pipe;
+	uint32_t pipe, sent;
 	boolean_t ret = FALSE;
+	tcp_seq_diff_t cwnd_left;
+	tcp_seq next;
 
 	tp->rexmt_high = tp->snd_una - 1;
 	pipe = tcp_sack_compute_pipe(tp);
-	while ((tcp_seq_diff_t)(ocwnd - pipe) >= (tcp_seq_diff_t)tp->t_maxseg) {
-		uint32_t sent;
-		tcp_seq next;
-		int error;
+	cwnd_left = (tcp_seq_diff_t)(ocwnd - pipe);
+	if (cwnd_left < (tcp_seq_diff_t)tp->t_maxseg)
+		return FALSE;
 
-		next = tp->snd_nxt = tp->snd_max;
-		tp->snd_cwnd = tp->snd_nxt - tp->snd_una + tp->t_maxseg;
+	next = tp->snd_nxt = tp->snd_max;
+	tp->snd_cwnd = tp->snd_nxt - tp->snd_una +
+	    rounddown(cwnd_left, tp->t_maxseg);
 
-		error = tcp_output(tp);
-		if (error)
-			break;
+	tp->t_flags |= TF_XMITNOW;
+	tcp_output(tp);
 
-		sent = tp->snd_nxt - next;
-		if (sent <= 0)
-			break;
-		pipe += sent;
-		++tcpstat.tcps_sndlimited;
+	sent = tp->snd_nxt - next;
+	if (sent > 0) {
+		tcpstat.tcps_sndlimited += howmany(sent, tp->t_maxseg);
 		ret = TRUE;
 	}
 
@@ -3360,6 +3357,9 @@ tcp_sack_limitedxmit(struct tcpcb *tp)
 		tp->snd_nxt = oldsndnxt;
 	}
 	tp->snd_cwnd = ocwnd;
+
+	if (ret && TCP_DO_NCR(tp))
+		tcp_ncr_update_rxtthresh(tp);
 
 	return ret;
 }
@@ -3438,4 +3438,203 @@ tcp_established(struct tcpcb *tp)
 		if (tp->t_rxtcur < TCPTV_RTOBASE3)
 			tp->t_rxtcur = TCPTV_RTOBASE3;
 	}
+}
+
+/*
+ * Returns TRUE, if the ACK should be dropped
+ */
+static boolean_t
+tcp_recv_dupack(struct tcpcb *tp, tcp_seq th_ack, u_int to_flags)
+{
+	boolean_t fast_sack_rexmt = TRUE;
+
+	tcpstat.tcps_rcvdupack++;
+
+	/*
+	 * We have outstanding data (other than a window probe),
+	 * this is a completely duplicate ack (ie, window info
+	 * didn't change), the ack is the biggest we've seen and
+	 * we've seen exactly our rexmt threshhold of them, so
+	 * assume a packet has been dropped and retransmit it.
+	 * Kludge snd_nxt & the congestion window so we send only
+	 * this one packet.
+	 */
+	if (IN_FASTRECOVERY(tp)) {
+		if (TCP_DO_SACK(tp)) {
+			boolean_t force = FALSE;
+
+			if (tp->snd_una == tp->rexmt_high &&
+			    (to_flags & (TOF_SACK | TOF_SACK_REDUNDANT)) ==
+			    TOF_SACK) {
+				/*
+				 * New segments got SACKed and
+				 * no retransmit yet.
+				 */
+				force = TRUE;
+			}
+
+			/* No artifical cwnd inflation. */
+			tcp_sack_rexmt(tp, force);
+		} else {
+			/*
+			 * Dup acks mean that packets have left
+			 * the network (they're now cached at the
+			 * receiver) so bump cwnd by the amount in
+			 * the receiver to keep a constant cwnd
+			 * packets in the network.
+			 */
+			tp->snd_cwnd += tp->t_maxseg;
+			tcp_output(tp);
+		}
+		return TRUE;
+	} else if (SEQ_LT(th_ack, tp->snd_recover)) {
+		tp->t_dupacks = 0;
+		return FALSE;
+	} else if (tcp_ignore_redun_dsack && TCP_DO_SACK(tp) &&
+	    (to_flags & (TOF_DSACK | TOF_SACK_REDUNDANT)) ==
+	    (TOF_DSACK | TOF_SACK_REDUNDANT)) {
+		/*
+		 * If the ACK carries DSACK and other SACK blocks
+		 * carry information that we have already known,
+		 * don't count this ACK as duplicate ACK.  This
+		 * prevents spurious early retransmit and fast
+		 * retransmit.  This also meets the requirement of
+		 * RFC3042 that new segments should not be sent if
+		 * the SACK blocks do not contain new information
+		 * (XXX we actually loosen the requirment that only
+		 * DSACK is checked here).
+		 *
+		 * This kind of ACKs are usually sent after spurious
+		 * retransmit.
+		 */
+		/* Do nothing; don't change t_dupacks */
+		return TRUE;
+	} else if (tp->t_dupacks == 0 && TCP_DO_NCR(tp)) {
+		tcp_ncr_update_rxtthresh(tp);
+	}
+
+	if (++tp->t_dupacks == tp->t_rxtthresh) {
+		tcp_seq old_snd_nxt;
+		u_int win;
+
+fastretransmit:
+		if (tcp_do_eifel_detect && (tp->t_flags & TF_RCVD_TSTMP)) {
+			tcp_save_congestion_state(tp);
+			tp->rxt_flags |= TRXT_F_FASTREXMT;
+		}
+		/*
+		 * We know we're losing at the current window size,
+		 * so do congestion avoidance: set ssthresh to half
+		 * the current window and pull our congestion window
+		 * back to the new ssthresh.
+		 */
+		win = min(tp->snd_wnd, tp->snd_cwnd) / 2 / tp->t_maxseg;
+		if (win < 2)
+			win = 2;
+		tp->snd_ssthresh = win * tp->t_maxseg;
+		ENTER_FASTRECOVERY(tp);
+		tp->snd_recover = tp->snd_max;
+		tcp_callout_stop(tp, tp->tt_rexmt);
+		tp->t_rtttime = 0;
+		old_snd_nxt = tp->snd_nxt;
+		tp->snd_nxt = th_ack;
+		if (TCP_DO_SACK(tp)) {
+			uint32_t rxtlen;
+
+			rxtlen = tcp_sack_first_unsacked_len(tp);
+			if (rxtlen > tp->t_maxseg)
+				rxtlen = tp->t_maxseg;
+			tp->snd_cwnd = rxtlen;
+		} else {
+			tp->snd_cwnd = tp->t_maxseg;
+		}
+		tcp_output(tp);
+		++tcpstat.tcps_sndfastrexmit;
+		tp->snd_cwnd = tp->snd_ssthresh;
+		tp->rexmt_high = tp->snd_nxt;
+		tp->sack_flags &= ~TSACK_F_SACKRESCUED;
+		if (SEQ_GT(old_snd_nxt, tp->snd_nxt))
+			tp->snd_nxt = old_snd_nxt;
+		KASSERT(tp->snd_limited <= 2, ("tp->snd_limited too big"));
+		if (TCP_DO_SACK(tp)) {
+			if (fast_sack_rexmt)
+				tcp_sack_rexmt(tp, FALSE);
+		} else {
+			tp->snd_cwnd += tp->t_maxseg *
+			    (tp->t_dupacks - tp->snd_limited);
+		}
+	} else if ((tcp_do_rfc3517bis && TCP_DO_SACK(tp)) || TCP_DO_NCR(tp)) {
+		/*
+		 * The RFC3517bis recommends to reduce the byte threshold,
+		 * and enter fast retransmit if IsLost(snd_una).  However,
+		 * if we use IsLost(snd_una) based fast retransmit here,
+		 * segments reordering will cause spurious retransmit.  So
+		 * we defer the IsLost(snd_una) based fast retransmit until
+		 * the extended limited transmit can't send any segments and
+		 * early retransmit can't be done.
+		 */
+		if (tcp_rfc3517bis_rxt && tcp_do_rfc3517bis &&
+		    tcp_sack_islost(&tp->scb, tp->snd_una))
+			goto fastretransmit;
+
+		if (tcp_do_limitedtransmit || TCP_DO_NCR(tp)) {
+			if (!tcp_sack_limitedxmit(tp)) {
+				/* outstanding data */
+				uint32_t ownd = tp->snd_max - tp->snd_una;
+
+				if (need_early_retransmit(tp, ownd)) {
+					++tcpstat.tcps_sndearlyrexmit;
+					tp->rxt_flags |= TRXT_F_EARLYREXMT;
+					goto fastretransmit;
+				} else if (tcp_do_rfc3517bis &&
+				    tcp_sack_islost(&tp->scb, tp->snd_una)) {
+					fast_sack_rexmt = FALSE;
+					goto fastretransmit;
+				}
+			}
+		}
+	} else if (tcp_do_limitedtransmit) {
+		u_long oldcwnd = tp->snd_cwnd;
+		tcp_seq oldsndmax = tp->snd_max;
+		tcp_seq oldsndnxt = tp->snd_nxt;
+		/* outstanding data */
+		uint32_t ownd = tp->snd_max - tp->snd_una;
+		u_int sent;
+
+		KASSERT(tp->t_dupacks == 1 || tp->t_dupacks == 2,
+		    ("dupacks not 1 or 2"));
+		if (tp->t_dupacks == 1)
+			tp->snd_limited = 0;
+		tp->snd_nxt = tp->snd_max;
+		tp->snd_cwnd = ownd +
+		    (tp->t_dupacks - tp->snd_limited) * tp->t_maxseg;
+		tp->t_flags |= TF_XMITNOW;
+		tcp_output(tp);
+
+		if (SEQ_LT(oldsndnxt, oldsndmax)) {
+			KASSERT(SEQ_GEQ(oldsndnxt, tp->snd_una),
+			    ("snd_una moved in other threads"));
+			tp->snd_nxt = oldsndnxt;
+		}
+		tp->snd_cwnd = oldcwnd;
+		sent = tp->snd_max - oldsndmax;
+		if (sent > tp->t_maxseg) {
+			KASSERT((tp->t_dupacks == 2 && tp->snd_limited == 0) ||
+			    (sent == tp->t_maxseg + 1 &&
+			     (tp->t_flags & TF_SENTFIN)),
+			    ("sent too much"));
+			KASSERT(sent <= tp->t_maxseg * 2,
+			    ("sent too many segments"));
+			tp->snd_limited = 2;
+			tcpstat.tcps_sndlimited += 2;
+		} else if (sent > 0) {
+			++tp->snd_limited;
+			++tcpstat.tcps_sndlimited;
+		} else if (need_early_retransmit(tp, ownd)) {
+			++tcpstat.tcps_sndearlyrexmit;
+			tp->rxt_flags |= TRXT_F_EARLYREXMT;
+			goto fastretransmit;
+		}
+	}
+	return TRUE;
 }

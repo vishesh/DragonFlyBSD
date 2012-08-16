@@ -279,6 +279,7 @@ dev/netif/ale/if_ale.c			optional ale
 dev/netif/bce/if_bce.c			optional bce
 dev/netif/bfe/if_bfe.c			optional bfe
 dev/netif/bge/if_bge.c			optional bge
+dev/netif/bnx/if_bnx.c			optional bnx
 dev/disk/buslogic/bt.c			optional bt
 dev/disk/buslogic/bt_isa.c		optional bt isa
 dev/disk/buslogic/bt_pci.c		optional bt pci
@@ -300,19 +301,32 @@ dev/netif/ep/if_ep_isa.c	optional ep isa
 dev/netif/ep/if_ep_pccard.c	optional ep pccard
 dev/netif/em/if_em.c		optional em
 dev/netif/emx/if_emx.c		optional emx
+dev/netif/igb/if_igb.c		optional igb
+dev/netif/ixgbe/ixgbe.c		optional ixgbe
+dev/netif/ixgbe/ixgbe_82598.c	optional ixgbe
+dev/netif/ixgbe/ixgbe_82599.c	optional ixgbe
+dev/netif/ixgbe/ixgbe_api.c	optional ixgbe
+dev/netif/ixgbe/ixgbe_common.c	optional ixgbe
+dev/netif/ixgbe/ixgbe_mbx.c	optional ixgbe
+dev/netif/ixgbe/ixgbe_phy.c	optional ixgbe
+dev/netif/ixgbe/ixgbe_vf.c	optional ixgbe
+dev/netif/ixgbe/ixgbe_x540.c	optional ixgbe
 dev/netif/ig_hal/e1000_80003es2lan.c	optional ig_hal
 dev/netif/ig_hal/e1000_82540.c	optional ig_hal
 dev/netif/ig_hal/e1000_82541.c	optional ig_hal
 dev/netif/ig_hal/e1000_82542.c	optional ig_hal
 dev/netif/ig_hal/e1000_82543.c	optional ig_hal
 dev/netif/ig_hal/e1000_82571.c	optional ig_hal
+dev/netif/ig_hal/e1000_82575.c	optional ig_hal
 dev/netif/ig_hal/e1000_api.c	optional ig_hal
 dev/netif/ig_hal/e1000_ich8lan.c	optional ig_hal
 dev/netif/ig_hal/e1000_mac.c	optional ig_hal
 dev/netif/ig_hal/e1000_manage.c	optional ig_hal
+dev/netif/ig_hal/e1000_mbx.c	optional ig_hal
 dev/netif/ig_hal/e1000_nvm.c	optional ig_hal
 dev/netif/ig_hal/e1000_osdep.c	optional ig_hal
 dev/netif/ig_hal/e1000_phy.c	optional ig_hal
+dev/netif/ig_hal/e1000_vf.c	optional ig_hal
 dev/atm/en/midway.c		optional en
 dev/netif/et/if_et.c		optional et
 dev/netif/ex/if_ex.c		optional ex
@@ -358,6 +372,9 @@ dev/raid/hptmv/mv.c		optional hptmv
 dev/raid/hptmv/gui_lib.c	optional hptmv
 dev/raid/hptmv/hptproc.c	optional hptmv
 dev/raid/hptmv/ioctl.c		optional hptmv
+dev/raid/hptrr/hptrr_os_bsd.c	optional hptrr
+dev/raid/hptrr/hptrr_osm_bsd.c	optional hptrr
+dev/raid/hptrr/hptrr_config.c	optional hptrr
 dev/powermng/ichsmb/ichsmb.c	optional ichsmb
 dev/powermng/ichsmb/ichsmb_pci.c	optional ichsmb pci
 dev/powermng/coretemp/coretemp.c	optional coretemp
@@ -799,7 +816,6 @@ kern/init_main.c	standard nowerror
 kern/init_sysent.c	standard
 kern/kern_checkpoint.c	standard
 kern/kern_sysref.c	standard
-kern/kern_ccms.c	standard
 kern/kern_intr.c	standard
 kern/kern_varsym.c	standard
 kern/kern_module.c	standard
@@ -1274,7 +1290,7 @@ netgraph7/ng_sppp.c		optional netgraph7_sppp
 netgraph7/ng_tag.c		optional netgraph7_tag
 netgraph7/tcpmss/ng_tcpmss.c	optional netgraph7_tcpmss
 netgraph7/tee/ng_tee.c		optional netgraph7_tee
-netgraph7/ng_tty.c		optional netgraph7_tty
+netgraph7/tty/ng_tty.c		optional netgraph7_tty
 netgraph7/vjc/ng_vjc.c		optional netgraph7_vjc
 
 netinet/libalias/alias.c	optional netgraph7_nat
@@ -1812,6 +1828,7 @@ libkern/idr.c				standard
 libkern/inet_ntoa.c			standard
 libkern/mcount.c			optional	profiling-routine
 libkern/memmove.c			standard
+libkern/memcchr.c			standard
 libkern/qsort.c				standard
 libkern/random.c			standard
 libkern/rindex.c			standard
@@ -1896,43 +1913,42 @@ dev/drm/drm_mm.c			optional drm
 dev/drm/drm_pci.c			optional drm
 dev/drm/drm_scatter.c			optional drm
 dev/drm/drm_sman.c			optional drm
-dev/drm/drm_subr_hash.c			optional drm
 dev/drm/drm_sysctl.c			optional drm
 dev/drm/drm_vm.c			optional drm
-dev/drm/i915_dma.c			optional i915drm drm
-dev/drm/i915_drv.c			optional i915drm drm
-dev/drm/i915_irq.c			optional i915drm drm
-dev/drm/i915_mem.c			optional i915drm drm
-dev/drm/i915_suspend.c			optional i915drm drm
-dev/drm/mach64_dma.c			optional mach64drm drm
-dev/drm/mach64_drv.c			optional mach64drm drm
-dev/drm/mach64_irq.c			optional mach64drm drm
-dev/drm/mach64_state.c			optional mach64drm drm
-dev/drm/mga_drv.c			optional mgadrm drm
-dev/drm/mga_state.c			optional mgadrm drm
-dev/drm/mga_warp.c			optional mgadrm drm
-dev/drm/mga_dma.c			optional mgadrm drm
-dev/drm/mga_irq.c			optional mgadrm drm
-dev/drm/r128_cce.c			optional r128drm drm
-dev/drm/r128_drv.c			optional r128drm drm
-dev/drm/r128_state.c			optional r128drm drm
-dev/drm/r128_irq.c			optional r128drm drm
-dev/drm/r300_cmdbuf.c			optional radeondrm drm
-dev/drm/r600_blit.c			optional radeondrm drm
-dev/drm/r600_cp.c			optional radeondrm drm
-dev/drm/radeon_cp.c			optional radeondrm drm
-dev/drm/radeon_cs.c			optional radeondrm drm
-dev/drm/radeon_drv.c			optional radeondrm drm
-dev/drm/radeon_state.c			optional radeondrm drm
-dev/drm/radeon_irq.c			optional radeondrm drm
-dev/drm/radeon_mem.c			optional radeondrm drm
-dev/drm/savage_bci.c			optional savagedrm drm
-dev/drm/savage_drv.c			optional savagedrm drm
-dev/drm/savage_state.c			optional savagedrm drm
-dev/drm/sis_drv.c			optional sisdrm drm
-dev/drm/sis_ds.c			optional sisdrm drm
-dev/drm/sis_mm.c			optional sisdrm drm
-dev/drm/tdfx_drv.c			optional tdfxdrm drm
+dev/drm/i915/i915_dma.c			optional i915drm drm
+dev/drm/i915/i915_drv.c			optional i915drm drm
+dev/drm/i915/i915_irq.c			optional i915drm drm
+dev/drm/i915/i915_mem.c			optional i915drm drm
+dev/drm/i915/i915_suspend.c		optional i915drm drm
+dev/drm/mach64/mach64_dma.c		optional mach64drm drm
+dev/drm/mach64/mach64_drv.c		optional mach64drm drm
+dev/drm/mach64/mach64_irq.c		optional mach64drm drm
+dev/drm/mach64/mach64_state.c		optional mach64drm drm
+dev/drm/mga/mga_dma.c			optional mgadrm drm
+dev/drm/mga/mga_drv.c			optional mgadrm drm
+dev/drm/mga/mga_irq.c			optional mgadrm drm
+dev/drm/mga/mga_state.c			optional mgadrm drm
+dev/drm/mga/mga_warp.c			optional mgadrm drm
+dev/drm/r128/r128_cce.c			optional r128drm drm
+dev/drm/r128/r128_drv.c			optional r128drm drm
+dev/drm/r128/r128_state.c		optional r128drm drm
+dev/drm/r128/r128_irq.c			optional r128drm drm
+dev/drm/radeon/r300_cmdbuf.c		optional radeondrm drm
+dev/drm/radeon/r600_blit.c		optional radeondrm drm
+dev/drm/radeon/r600_cp.c		optional radeondrm drm
+dev/drm/radeon/radeon_cp.c		optional radeondrm drm
+dev/drm/radeon/radeon_cs.c		optional radeondrm drm
+dev/drm/radeon/radeon_drv.c		optional radeondrm drm
+dev/drm/radeon/radeon_irq.c		optional radeondrm drm
+dev/drm/radeon/radeon_mem.c		optional radeondrm drm
+dev/drm/radeon/radeon_state.c		optional radeondrm drm
+dev/drm/savage/savage_bci.c		optional savagedrm drm
+dev/drm/savage/savage_drv.c		optional savagedrm drm
+dev/drm/savage/savage_state.c		optional savagedrm drm
+dev/drm/sis/sis_drv.c			optional sisdrm drm
+dev/drm/sis/sis_ds.c			optional sisdrm drm
+dev/drm/sis/sis_mm.c			optional sisdrm drm
+dev/drm/tdfx/tdfx_drv.c			optional tdfxdrm drm
 dev/misc/nsclpcsio/nsclpcsio_isa.c	optional nsclpcsio isa
 dev/powermng/aps/aps.c			optional aps isa
 dev/powermng/it/it.c			optional it isa
@@ -2025,6 +2041,7 @@ ${ACPICA_DIR}/disassembler/dmresrcs.c		optional acpi acpi_debug
 ${ACPICA_DIR}/disassembler/dmutils.c		optional acpi acpi_debug
 ${ACPICA_DIR}/disassembler/dmwalk.c		optional acpi acpi_debug
 ${ACPICA_DIR}/events/evevent.c			optional acpi
+${ACPICA_DIR}/events/evglock.c			optional acpi
 ${ACPICA_DIR}/events/evgpe.c			optional acpi
 ${ACPICA_DIR}/events/evgpeblk.c			optional acpi
 ${ACPICA_DIR}/events/evgpeinit.c		optional acpi

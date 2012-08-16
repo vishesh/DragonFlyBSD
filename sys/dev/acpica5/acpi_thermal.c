@@ -24,7 +24,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: src/sys/dev/acpica/acpi_thermal.c,v 1.73 2009/08/20 19:17:53 jhb
+ * $FreeBSD: src/sys/dev/acpica/acpi_thermal.c,v 1.79 2011/11/17 23:04:43 eadler Exp $
  */
 
 #include "opt_acpi.h"
@@ -34,7 +34,6 @@
 #include <sys/kthread.h>
 #include <sys/malloc.h>
 #include <sys/module.h>
-#include <sys/bus.h>
 #include <sys/proc.h>
 #include <sys/reboot.h>
 #include <sys/sysctl.h>
@@ -250,7 +249,7 @@ acpi_tz_attach(device_t dev)
 	SYSCTL_ADD_INT(&acpi_tz_sysctl_ctx,
 		       SYSCTL_CHILDREN(acpi_tz_sysctl_tree),
 		       OID_AUTO, "polling_rate", CTLFLAG_RW,
-		       &acpi_tz_polling_rate, 0, "monitor polling rate");
+		       &acpi_tz_polling_rate, 0, "monitor polling interval in seconds");
 	SYSCTL_ADD_INT(&acpi_tz_sysctl_ctx,
 		       SYSCTL_CHILDREN(acpi_tz_sysctl_tree), OID_AUTO,
 		       "user_override", CTLFLAG_RW, &acpi_tz_override, 0,
@@ -261,10 +260,10 @@ acpi_tz_attach(device_t dev)
     sc->tz_sysctl_tree = SYSCTL_ADD_NODE(&sc->tz_sysctl_ctx,
 					 SYSCTL_CHILDREN(acpi_tz_sysctl_tree),
 					 OID_AUTO, oidname, CTLFLAG_RD, 0, "");
-    SYSCTL_ADD_OPAQUE(&sc->tz_sysctl_ctx, SYSCTL_CHILDREN(sc->tz_sysctl_tree),
-		      OID_AUTO, "temperature", CTLFLAG_RD, &sc->tz_temperature,
-		      sizeof(sc->tz_temperature), "IK",
-		      "current thermal zone temperature");
+    SYSCTL_ADD_PROC(&sc->tz_sysctl_ctx, SYSCTL_CHILDREN(sc->tz_sysctl_tree),
+		    OID_AUTO, "temperature", CTLTYPE_INT | CTLFLAG_RD,
+		    &sc->tz_temperature, 0, sysctl_handle_int,
+		    "IK", "current thermal zone temperature");
     SYSCTL_ADD_PROC(&sc->tz_sysctl_ctx, SYSCTL_CHILDREN(sc->tz_sysctl_tree),
 		    OID_AUTO, "active", CTLTYPE_INT | CTLFLAG_RW,
 		    sc, 0, acpi_tz_active_sysctl, "I", "cooling is active");
@@ -290,9 +289,10 @@ acpi_tz_attach(device_t dev)
 		    sc, offsetof(struct acpi_tz_softc, tz_zone.crt),
 		    acpi_tz_temp_sysctl, "IK",
 		    "critical temp setpoint (shutdown now)");
-    SYSCTL_ADD_OPAQUE(&sc->tz_sysctl_ctx, SYSCTL_CHILDREN(sc->tz_sysctl_tree),
-		      OID_AUTO, "_ACx", CTLFLAG_RD, &sc->tz_zone.ac,
-		      sizeof(sc->tz_zone.ac), "IK", "");
+    SYSCTL_ADD_PROC(&sc->tz_sysctl_ctx, SYSCTL_CHILDREN(sc->tz_sysctl_tree),
+		    OID_AUTO, "_ACx", CTLTYPE_INT | CTLFLAG_RD,
+		    &sc->tz_zone.ac, sizeof(sc->tz_zone.ac),
+		    sysctl_handle_opaque, "IK", "");
     SYSCTL_ADD_PROC(&sc->tz_sysctl_ctx, SYSCTL_CHILDREN(sc->tz_sysctl_tree),
 		    OID_AUTO, "_TC1", CTLTYPE_INT | CTLFLAG_RW,
 		    sc, offsetof(struct acpi_tz_softc, tz_zone.tc1),

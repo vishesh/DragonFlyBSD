@@ -64,15 +64,7 @@
  * SUCH DAMAGE.
  */
 
-/*
- * NOTE:
- *
- * MSI-X MUST NOT be enabled on 82574:
- *   <<82574 specification update>> errata #15
- */
-
 #include "opt_ifpoll.h"
-#include "opt_rss.h"
 #include "opt_emx.h"
 
 #include <sys/param.h>
@@ -127,6 +119,9 @@ do { \
 #else	/* !EMX_RSS_DEBUG */
 #define EMX_RSS_DPRINTF(sc, lvl, fmt, ...)	((void)0)
 #endif	/* EMX_RSS_DEBUG */
+
+#define EMX_TX_SERIALIZE	1
+#define EMX_RX_SERIALIZE	2
 
 #define EMX_NAME	"Intel(R) PRO/1000 "
 
@@ -198,6 +193,8 @@ static void	emx_serialize_assert(struct ifnet *, enum ifnet_serialize,
 #endif
 
 static void	emx_intr(void *);
+static void	emx_intr_mask(void *);
+static void	emx_intr_body(struct emx_softc *, boolean_t);
 static void	emx_rxeof(struct emx_softc *, int, int);
 static void	emx_txeof(struct emx_softc *);
 static void	emx_tx_collect(struct emx_softc *);
@@ -217,8 +214,10 @@ static void	emx_destroy_rx_ring(struct emx_softc *,
 		    struct emx_rxdata *, int);
 static int	emx_newbuf(struct emx_softc *, struct emx_rxdata *, int, int);
 static int	emx_encap(struct emx_softc *, struct mbuf **);
-static int	emx_txcsum_pullup(struct emx_softc *, struct mbuf **);
 static int	emx_txcsum(struct emx_softc *, struct mbuf *,
+		    uint32_t *, uint32_t *);
+static int	emx_tso_pullup(struct emx_softc *, struct mbuf **);
+static int	emx_tso_setup(struct emx_softc *, struct mbuf *,
 		    uint32_t *, uint32_t *);
 
 static int 	emx_is_valid_eaddr(const uint8_t *);
@@ -410,9 +409,10 @@ emx_attach(device_t dev)
 {
 	struct emx_softc *sc = device_get_softc(dev);
 	struct ifnet *ifp = &sc->arpcom.ac_if;
-	int error = 0, i, throttle;
+	int error = 0, i, throttle, msi_enable;
 	u_int intr_flags;
 	uint16_t eeprom_data, device_id, apme_mask;
+	driver_intr_t *intr_func;
 
 	lwkt_serialize_init(&sc->main_serialize);
 	lwkt_serialize_init(&sc->tx_serialize);
@@ -442,6 +442,17 @@ emx_attach(device_t dev)
 	if (e1000_set_mac_type(&sc->hw))
 		return ENXIO;
 
+	/*
+	 * Pullup extra 4bytes into the first data segment, see:
+	 * 82571/82572 specification update errata #7
+	 *
+	 * NOTE:
+	 * 4bytes instead of 2bytes, which are mentioned in the errata,
+	 * are pulled; mainly to keep rest of the data properly aligned.
+	 */
+	if (sc->hw.mac.type == e1000_82571 || sc->hw.mac.type == e1000_82572)
+		sc->flags |= EMX_FLAG_TSO_PULLEX;
+
 	/* Enable bus mastering */
 	pci_enable_busmaster(dev);
 
@@ -463,10 +474,38 @@ emx_attach(device_t dev)
 	sc->hw.hw_addr = (uint8_t *)&sc->osdep.mem_bus_space_handle;
 
 	/*
+	 * Don't enable MSI-X on 82574, see:
+	 * 82574 specification update errata #15
+	 *
+	 * Don't enable MSI on 82571/82572, see:
+	 * 82571/82572 specification update errata #63
+	 */
+	msi_enable = emx_msi_enable;
+	if (msi_enable &&
+	    (sc->hw.mac.type == e1000_82571 ||
+	     sc->hw.mac.type == e1000_82572))
+		msi_enable = 0;
+
+	/*
 	 * Allocate interrupt
 	 */
-	sc->intr_type = pci_alloc_1intr(dev, emx_msi_enable,
+	sc->intr_type = pci_alloc_1intr(dev, msi_enable,
 	    &sc->intr_rid, &intr_flags);
+
+	if (sc->intr_type == PCI_INTR_TYPE_LEGACY) {
+		int unshared;
+
+		unshared = device_getenv_int(dev, "irq.unshared", 0);
+		if (!unshared) {
+			sc->flags |= EMX_FLAG_SHARED_INTR;
+			if (bootverbose)
+				device_printf(dev, "IRQ shared\n");
+		} else {
+			intr_flags &= ~RF_SHAREABLE;
+			if (bootverbose)
+				device_printf(dev, "IRQ unshared\n");
+		}
+	}
 
 	sc->intr_res = bus_alloc_resource_any(dev, SYS_RES_IRQ, &sc->intr_rid,
 	    intr_flags);
@@ -690,7 +729,22 @@ emx_attach(device_t dev)
 	if (sc->has_manage && !sc->has_amt)
 		emx_get_hw_control(sc);
 
-	error = bus_setup_intr(dev, sc->intr_res, INTR_MPSAFE, emx_intr, sc,
+	/*
+	 * Missing Interrupt Following ICR read:
+	 *
+	 * 82571/82572 specification update errata #76
+	 * 82573 specification update errata #31
+	 * 82574 specification update errata #12
+	 */
+	intr_func = emx_intr;
+	if ((sc->flags & EMX_FLAG_SHARED_INTR) &&
+	    (sc->hw.mac.type == e1000_82571 ||
+	     sc->hw.mac.type == e1000_82572 ||
+	     sc->hw.mac.type == e1000_82573 ||
+	     sc->hw.mac.type == e1000_82574))
+		intr_func = emx_intr_mask;
+
+	error = bus_setup_intr(dev, sc->intr_res, INTR_MPSAFE, intr_func, sc,
 			       &sc->intr_tag, &sc->main_serialize);
 	if (error) {
 		device_printf(dev, "Failed to register interrupt handler");
@@ -952,13 +1006,27 @@ emx_ioctl(struct ifnet *ifp, u_long command, caddr_t data, struct ucred *cr)
 	case SIOCSIFCAP:
 		reinit = 0;
 		mask = ifr->ifr_reqcap ^ ifp->if_capenable;
-		if (mask & IFCAP_HWCSUM) {
-			ifp->if_capenable ^= (mask & IFCAP_HWCSUM);
+		if (mask & IFCAP_RXCSUM) {
+			ifp->if_capenable ^= IFCAP_RXCSUM;
 			reinit = 1;
 		}
 		if (mask & IFCAP_VLAN_HWTAGGING) {
 			ifp->if_capenable ^= IFCAP_VLAN_HWTAGGING;
 			reinit = 1;
+		}
+		if (mask & IFCAP_TXCSUM) {
+			ifp->if_capenable ^= IFCAP_TXCSUM;
+			if (ifp->if_capenable & IFCAP_TXCSUM)
+				ifp->if_hwassist |= EMX_CSUM_FEATURES;
+			else
+				ifp->if_hwassist &= ~EMX_CSUM_FEATURES;
+		}
+		if (mask & IFCAP_TSO) {
+			ifp->if_capenable ^= IFCAP_TSO;
+			if (ifp->if_capenable & IFCAP_TSO)
+				ifp->if_hwassist |= CSUM_TSO;
+			else
+				ifp->if_hwassist &= ~CSUM_TSO;
 		}
 		if (mask & IFCAP_RSS)
 			ifp->if_capenable ^= IFCAP_RSS;
@@ -1101,12 +1169,6 @@ emx_init(void *xsc)
 		E1000_WRITE_REG(&sc->hw, E1000_CTRL, ctrl);
 	}
 
-	/* Set hardware offload abilities */
-	if (ifp->if_capenable & IFCAP_TXCSUM)
-		ifp->if_hwassist = EMX_CSUM_FEATURES;
-	else
-		ifp->if_hwassist = 0;
-
 	/* Configure for OS presence */
 	emx_get_mgmt(sc);
 
@@ -1177,7 +1239,12 @@ emx_init(void *xsc)
 static void
 emx_intr(void *xsc)
 {
-	struct emx_softc *sc = xsc;
+	emx_intr_body(xsc, TRUE);
+}
+
+static void
+emx_intr_body(struct emx_softc *sc, boolean_t chk_asserted)
+{
 	struct ifnet *ifp = &sc->arpcom.ac_if;
 	uint32_t reg_icr;
 
@@ -1186,7 +1253,7 @@ emx_intr(void *xsc)
 
 	reg_icr = E1000_READ_REG(&sc->hw, E1000_ICR);
 
-	if ((reg_icr & E1000_ICR_INT_ASSERTED) == 0) {
+	if (chk_asserted && (reg_icr & E1000_ICR_INT_ASSERTED) == 0) {
 		logif(intr_end);
 		return;
 	}
@@ -1244,6 +1311,21 @@ emx_intr(void *xsc)
 		sc->rx_overruns++;
 
 	logif(intr_end);
+}
+
+static void
+emx_intr_mask(void *xsc)
+{
+	struct emx_softc *sc = xsc;
+
+	E1000_WRITE_REG(&sc->hw, E1000_IMC, 0xffffffff);
+	/*
+	 * NOTE:
+	 * ICR.INT_ASSERTED bit will never be set if IMS is 0,
+	 * so don't check it.
+	 */
+	emx_intr_body(sc, FALSE);
+	E1000_WRITE_REG(&sc->hw, E1000_IMS, IMS_ENABLE_MASK);
 }
 
 static void
@@ -1355,18 +1437,10 @@ emx_encap(struct emx_softc *sc, struct mbuf **m_headp)
 	uint32_t txd_upper, txd_lower, cmd = 0;
 	int maxsegs, nsegs, i, j, first, last = 0, error;
 
-	if (m_head->m_len < EMX_TXCSUM_MINHL &&
-	    (m_head->m_flags & EMX_CSUM_FEATURES)) {
-		/*
-		 * Make sure that ethernet header and ip.ip_hl are in
-		 * contiguous memory, since if TXCSUM is enabled, later
-		 * TX context descriptor's setup need to access ip.ip_hl.
-		 */
-		error = emx_txcsum_pullup(sc, m_headp);
-		if (error) {
-			KKASSERT(*m_headp == NULL);
+	if (m_head->m_pkthdr.csum_flags & CSUM_TSO) {
+		error = emx_tso_pullup(sc, m_headp);
+		if (error)
 			return error;
-		}
 		m_head = *m_headp;
 	}
 
@@ -1404,7 +1478,11 @@ emx_encap(struct emx_softc *sc, struct mbuf **m_headp)
 	m_head = *m_headp;
 	sc->tx_nsegs += nsegs;
 
-	if (m_head->m_pkthdr.csum_flags & EMX_CSUM_FEATURES) {
+	if (m_head->m_pkthdr.csum_flags & CSUM_TSO) {
+		/* TSO will consume one TX desc */
+		sc->tx_nsegs += emx_tso_setup(sc, m_head,
+		    &txd_upper, &txd_lower);
+	} else if (m_head->m_pkthdr.csum_flags & EMX_CSUM_FEATURES) {
 		/* TX csum offloading will consume one TX desc */
 		sc->tx_nsegs += emx_txcsum(sc, m_head, &txd_upper, &txd_lower);
 	}
@@ -1693,8 +1771,11 @@ emx_stop(struct emx_softc *sc)
 		emx_free_rx_ring(sc, &sc->rx_data[i]);
 
 	sc->csum_flags = 0;
-	sc->csum_ehlen = 0;
+	sc->csum_lhlen = 0;
 	sc->csum_iphlen = 0;
+	sc->csum_thlen = 0;
+	sc->csum_mss = 0;
+	sc->csum_pktlen = 0;
 
 	sc->tx_dd_head = 0;
 	sc->tx_dd_tail = 0;
@@ -1794,11 +1875,12 @@ emx_setup_ifp(struct emx_softc *sc)
 
 	ifp->if_capabilities = IFCAP_HWCSUM |
 			       IFCAP_VLAN_HWTAGGING |
-			       IFCAP_VLAN_MTU;
+			       IFCAP_VLAN_MTU |
+			       IFCAP_TSO;
 	if (sc->rx_ring_cnt > 1)
 		ifp->if_capabilities |= IFCAP_RSS;
 	ifp->if_capenable = ifp->if_capabilities;
-	ifp->if_hwassist = EMX_CSUM_FEATURES;
+	ifp->if_hwassist = EMX_CSUM_FEATURES | CSUM_TSO;
 
 	/*
 	 * Tell the upper layer(s) we support long frames.
@@ -2101,48 +2183,14 @@ emx_txcsum(struct emx_softc *sc, struct mbuf *mp,
 	   uint32_t *txd_upper, uint32_t *txd_lower)
 {
 	struct e1000_context_desc *TXD;
-	struct emx_txbuf *tx_buffer;
-	struct ether_vlan_header *eh;
-	struct ip *ip;
 	int curr_txd, ehdrlen, csum_flags;
 	uint32_t cmd, hdr_len, ip_hlen;
-	uint16_t etype;
-
-	/*
-	 * Determine where frame payload starts.
-	 * Jump over vlan headers if already present,
-	 * helpful for QinQ too.
-	 */
-	KASSERT(mp->m_len >= ETHER_HDR_LEN,
-		("emx_txcsum_pullup is not called (eh)?"));
-	eh = mtod(mp, struct ether_vlan_header *);
-	if (eh->evl_encap_proto == htons(ETHERTYPE_VLAN)) {
-		KASSERT(mp->m_len >= ETHER_HDR_LEN + EVL_ENCAPLEN,
-			("emx_txcsum_pullup is not called (evh)?"));
-		etype = ntohs(eh->evl_proto);
-		ehdrlen = ETHER_HDR_LEN + EVL_ENCAPLEN;
-	} else {
-		etype = ntohs(eh->evl_encap_proto);
-		ehdrlen = ETHER_HDR_LEN;
-	}
-
-	/*
-	 * We only support TCP/UDP for IPv4 for the moment.
-	 * TODO: Support SCTP too when it hits the tree.
-	 */
-	if (etype != ETHERTYPE_IP)
-		return 0;
-
-	KASSERT(mp->m_len >= ehdrlen + EMX_IPVHL_SIZE,
-		("emx_txcsum_pullup is not called (eh+ip_vhl)?"));
-
-	/* NOTE: We could only safely access ip.ip_vhl part */
-	ip = (struct ip *)(mp->m_data + ehdrlen);
-	ip_hlen = ip->ip_hl << 2;
 
 	csum_flags = mp->m_pkthdr.csum_flags & EMX_CSUM_FEATURES;
+	ip_hlen = mp->m_pkthdr.csum_iphlen;
+	ehdrlen = mp->m_pkthdr.csum_lhlen;
 
-	if (sc->csum_ehlen == ehdrlen && sc->csum_iphlen == ip_hlen &&
+	if (sc->csum_lhlen == ehdrlen && sc->csum_iphlen == ip_hlen &&
 	    sc->csum_flags == csum_flags) {
 		/*
 		 * Same csum offload context as the previous packets;
@@ -2158,7 +2206,6 @@ emx_txcsum(struct emx_softc *sc, struct mbuf *mp,
 	 */
 
 	curr_txd = sc->next_avail_tx_desc;
-	tx_buffer = &sc->tx_buf[curr_txd];
 	TXD = (struct e1000_context_desc *)&sc->tx_desc_base[curr_txd];
 
 	cmd = 0;
@@ -2209,7 +2256,7 @@ emx_txcsum(struct emx_softc *sc, struct mbuf *mp,
 		     E1000_TXD_DTYP_D;		/* Data descr */
 
 	/* Save the information for this csum offloading context */
-	sc->csum_ehlen = ehdrlen;
+	sc->csum_lhlen = ehdrlen;
 	sc->csum_iphlen = ip_hlen;
 	sc->csum_flags = csum_flags;
 	sc->csum_txd_upper = *txd_upper;
@@ -2227,66 +2274,6 @@ emx_txcsum(struct emx_softc *sc, struct mbuf *mp,
 
 	sc->next_avail_tx_desc = curr_txd;
 	return 1;
-}
-
-static int
-emx_txcsum_pullup(struct emx_softc *sc, struct mbuf **m0)
-{
-	struct mbuf *m = *m0;
-	struct ether_header *eh;
-	int len;
-
-	sc->tx_csum_try_pullup++;
-
-	len = ETHER_HDR_LEN + EMX_IPVHL_SIZE;
-
-	if (__predict_false(!M_WRITABLE(m))) {
-		if (__predict_false(m->m_len < ETHER_HDR_LEN)) {
-			sc->tx_csum_drop1++;
-			m_freem(m);
-			*m0 = NULL;
-			return ENOBUFS;
-		}
-		eh = mtod(m, struct ether_header *);
-
-		if (eh->ether_type == htons(ETHERTYPE_VLAN))
-			len += EVL_ENCAPLEN;
-
-		if (m->m_len < len) {
-			sc->tx_csum_drop2++;
-			m_freem(m);
-			*m0 = NULL;
-			return ENOBUFS;
-		}
-		return 0;
-	}
-
-	if (__predict_false(m->m_len < ETHER_HDR_LEN)) {
-		sc->tx_csum_pullup1++;
-		m = m_pullup(m, ETHER_HDR_LEN);
-		if (m == NULL) {
-			sc->tx_csum_pullup1_failed++;
-			*m0 = NULL;
-			return ENOBUFS;
-		}
-		*m0 = m;
-	}
-	eh = mtod(m, struct ether_header *);
-
-	if (eh->ether_type == htons(ETHERTYPE_VLAN))
-		len += EVL_ENCAPLEN;
-
-	if (m->m_len < len) {
-		sc->tx_csum_pullup2++;
-		m = m_pullup(m, len);
-		if (m == NULL) {
-			sc->tx_csum_pullup2_failed++;
-			*m0 = NULL;
-			return ENOBUFS;
-		}
-		*m0 = m;
-	}
-	return 0;
 }
 
 static void
@@ -3243,20 +3230,8 @@ emx_print_debug_info(struct emx_softc *sc)
 	device_printf(dev, "Driver tx dma failure in encap = %ld\n",
 	    sc->no_tx_dma_setup);
 
-	device_printf(dev, "TXCSUM try pullup = %lu\n",
-	    sc->tx_csum_try_pullup);
-	device_printf(dev, "TXCSUM m_pullup(eh) called = %lu\n",
-	    sc->tx_csum_pullup1);
-	device_printf(dev, "TXCSUM m_pullup(eh) failed = %lu\n",
-	    sc->tx_csum_pullup1_failed);
-	device_printf(dev, "TXCSUM m_pullup(eh+ip) called = %lu\n",
-	    sc->tx_csum_pullup2);
-	device_printf(dev, "TXCSUM m_pullup(eh+ip) failed = %lu\n",
-	    sc->tx_csum_pullup2_failed);
-	device_printf(dev, "TXCSUM non-writable(eh) droped = %lu\n",
-	    sc->tx_csum_drop1);
-	device_printf(dev, "TXCSUM non-writable(eh+ip) droped = %lu\n",
-	    sc->tx_csum_drop2);
+	device_printf(dev, "TSO segments %lu\n", sc->tso_segments);
+	device_printf(dev, "TSO ctx reused %lu\n", sc->tso_ctx_reused);
 }
 
 static void
@@ -3584,30 +3559,8 @@ emx_serialize(struct ifnet *ifp, enum ifnet_serialize slz)
 {
 	struct emx_softc *sc = ifp->if_softc;
 
-	switch (slz) {
-	case IFNET_SERIALIZE_ALL:
-		lwkt_serialize_array_enter(sc->serializes, EMX_NSERIALIZE, 0);
-		break;
-
-	case IFNET_SERIALIZE_MAIN:
-		lwkt_serialize_enter(&sc->main_serialize);
-		break;
-
-	case IFNET_SERIALIZE_TX:
-		lwkt_serialize_enter(&sc->tx_serialize);
-		break;
-
-	case IFNET_SERIALIZE_RX(0):
-		lwkt_serialize_enter(&sc->rx_data[0].rx_serialize);
-		break;
-
-	case IFNET_SERIALIZE_RX(1):
-		lwkt_serialize_enter(&sc->rx_data[1].rx_serialize);
-		break;
-
-	default:
-		panic("%s unsupported serialize type", ifp->if_xname);
-	}
+	ifnet_serialize_array_enter(sc->serializes, EMX_NSERIALIZE,
+	    EMX_TX_SERIALIZE, EMX_RX_SERIALIZE, slz);
 }
 
 static void
@@ -3615,30 +3568,8 @@ emx_deserialize(struct ifnet *ifp, enum ifnet_serialize slz)
 {
 	struct emx_softc *sc = ifp->if_softc;
 
-	switch (slz) {
-	case IFNET_SERIALIZE_ALL:
-		lwkt_serialize_array_exit(sc->serializes, EMX_NSERIALIZE, 0);
-		break;
-
-	case IFNET_SERIALIZE_MAIN:
-		lwkt_serialize_exit(&sc->main_serialize);
-		break;
-
-	case IFNET_SERIALIZE_TX:
-		lwkt_serialize_exit(&sc->tx_serialize);
-		break;
-
-	case IFNET_SERIALIZE_RX(0):
-		lwkt_serialize_exit(&sc->rx_data[0].rx_serialize);
-		break;
-
-	case IFNET_SERIALIZE_RX(1):
-		lwkt_serialize_exit(&sc->rx_data[1].rx_serialize);
-		break;
-
-	default:
-		panic("%s unsupported serialize type", ifp->if_xname);
-	}
+	ifnet_serialize_array_exit(sc->serializes, EMX_NSERIALIZE,
+	    EMX_TX_SERIALIZE, EMX_RX_SERIALIZE, slz);
 }
 
 static int
@@ -3646,26 +3577,8 @@ emx_tryserialize(struct ifnet *ifp, enum ifnet_serialize slz)
 {
 	struct emx_softc *sc = ifp->if_softc;
 
-	switch (slz) {
-	case IFNET_SERIALIZE_ALL:
-		return lwkt_serialize_array_try(sc->serializes,
-						EMX_NSERIALIZE, 0);
-
-	case IFNET_SERIALIZE_MAIN:
-		return lwkt_serialize_try(&sc->main_serialize);
-
-	case IFNET_SERIALIZE_TX:
-		return lwkt_serialize_try(&sc->tx_serialize);
-
-	case IFNET_SERIALIZE_RX(0):
-		return lwkt_serialize_try(&sc->rx_data[0].rx_serialize);
-
-	case IFNET_SERIALIZE_RX(1):
-		return lwkt_serialize_try(&sc->rx_data[1].rx_serialize);
-
-	default:
-		panic("%s unsupported serialize type", ifp->if_xname);
-	}
+	return ifnet_serialize_array_try(sc->serializes, EMX_NSERIALIZE,
+	    EMX_TX_SERIALIZE, EMX_RX_SERIALIZE, slz);
 }
 
 static void
@@ -3684,53 +3597,12 @@ emx_deserialize_skipmain(struct emx_softc *sc)
 
 static void
 emx_serialize_assert(struct ifnet *ifp, enum ifnet_serialize slz,
-		     boolean_t serialized)
+    boolean_t serialized)
 {
 	struct emx_softc *sc = ifp->if_softc;
-	int i;
 
-	switch (slz) {
-	case IFNET_SERIALIZE_ALL:
-		if (serialized) {
-			for (i = 0; i < EMX_NSERIALIZE; ++i)
-				ASSERT_SERIALIZED(sc->serializes[i]);
-		} else {
-			for (i = 0; i < EMX_NSERIALIZE; ++i)
-				ASSERT_NOT_SERIALIZED(sc->serializes[i]);
-		}
-		break;
-
-	case IFNET_SERIALIZE_MAIN:
-		if (serialized)
-			ASSERT_SERIALIZED(&sc->main_serialize);
-		else
-			ASSERT_NOT_SERIALIZED(&sc->main_serialize);
-		break;
-
-	case IFNET_SERIALIZE_TX:
-		if (serialized)
-			ASSERT_SERIALIZED(&sc->tx_serialize);
-		else
-			ASSERT_NOT_SERIALIZED(&sc->tx_serialize);
-		break;
-
-	case IFNET_SERIALIZE_RX(0):
-		if (serialized)
-			ASSERT_SERIALIZED(&sc->rx_data[0].rx_serialize);
-		else
-			ASSERT_NOT_SERIALIZED(&sc->rx_data[0].rx_serialize);
-		break;
-
-	case IFNET_SERIALIZE_RX(1):
-		if (serialized)
-			ASSERT_SERIALIZED(&sc->rx_data[1].rx_serialize);
-		else
-			ASSERT_NOT_SERIALIZED(&sc->rx_data[1].rx_serialize);
-		break;
-
-	default:
-		panic("%s unsupported serialize type", ifp->if_xname);
-	}
+	ifnet_serialize_array_assert(sc->serializes, EMX_NSERIALIZE,
+	    EMX_TX_SERIALIZE, EMX_RX_SERIALIZE, slz, serialized);
 }
 
 #endif	/* INVARIANTS */
@@ -3836,13 +3708,33 @@ emx_set_itr(struct emx_softc *sc, uint32_t itr)
 static void
 emx_disable_aspm(struct emx_softc *sc)
 {
-	uint16_t link_cap, link_ctrl;
+	uint16_t link_cap, link_ctrl, disable;
 	uint8_t pcie_ptr, reg;
 	device_t dev = sc->dev;
 
 	switch (sc->hw.mac.type) {
+	case e1000_82571:
+	case e1000_82572:
 	case e1000_82573:
+		/*
+		 * 82573 specification update
+		 * errata #8 disable L0s
+		 * errata #41 disable L1
+		 *
+		 * 82571/82572 specification update
+		 # errata #13 disable L1
+		 * errata #68 disable L0s
+		 */
+		disable = PCIEM_LNKCTL_ASPM_L0S | PCIEM_LNKCTL_ASPM_L1;
+		break;
+
 	case e1000_82574:
+		/*
+		 * 82574 specification update errata #20
+		 *
+		 * There is no need to disable L1
+		 */
+		disable = PCIEM_LNKCTL_ASPM_L0S;
 		break;
 
 	default:
@@ -3858,10 +3750,144 @@ emx_disable_aspm(struct emx_softc *sc)
 		return;
 
 	if (bootverbose)
-		if_printf(&sc->arpcom.ac_if, "disable L0s\n");
+		if_printf(&sc->arpcom.ac_if, "disable ASPM %#02x\n", disable);
 
 	reg = pcie_ptr + PCIER_LINKCTRL;
 	link_ctrl = pci_read_config(dev, reg, 2);
-	link_ctrl &= ~PCIEM_LNKCTL_ASPM_L0S;
+	link_ctrl &= ~disable;
 	pci_write_config(dev, reg, link_ctrl, 2);
+}
+
+static int
+emx_tso_pullup(struct emx_softc *sc, struct mbuf **mp)
+{
+	int iphlen, hoff, thoff, ex = 0;
+	struct mbuf *m;
+
+	m = *mp;
+	KASSERT(M_WRITABLE(m), ("TSO mbuf not writable"));
+
+	iphlen = m->m_pkthdr.csum_iphlen;
+	thoff = m->m_pkthdr.csum_thlen;
+	hoff = m->m_pkthdr.csum_lhlen;
+
+	KASSERT(iphlen > 0, ("invalid ip hlen"));
+	KASSERT(thoff > 0, ("invalid tcp hlen"));
+	KASSERT(hoff > 0, ("invalid ether hlen"));
+
+	if (sc->flags & EMX_FLAG_TSO_PULLEX)
+		ex = 4;
+
+	if (m->m_len < hoff + iphlen + thoff + ex) {
+		m = m_pullup(m, hoff + iphlen + thoff + ex);
+		if (m == NULL) {
+			*mp = NULL;
+			return ENOBUFS;
+		}
+		*mp = m;
+	}
+	return 0;
+}
+
+static int
+emx_tso_setup(struct emx_softc *sc, struct mbuf *mp,
+    uint32_t *txd_upper, uint32_t *txd_lower)
+{
+	struct e1000_context_desc *TXD;
+	int hoff, iphlen, thoff, hlen;
+	int mss, pktlen, curr_txd;
+	struct ip *ip;
+
+#ifdef EMX_TSO_DEBUG
+	sc->tso_segments++;
+#endif
+
+	iphlen = mp->m_pkthdr.csum_iphlen;
+	thoff = mp->m_pkthdr.csum_thlen;
+	hoff = mp->m_pkthdr.csum_lhlen;
+	mss = mp->m_pkthdr.tso_segsz;
+	pktlen = mp->m_pkthdr.len;
+
+	ip = mtodoff(mp, struct ip *, hoff);
+	ip->ip_len = 0;
+
+	if (sc->csum_flags == CSUM_TSO &&
+	    sc->csum_iphlen == iphlen &&
+	    sc->csum_lhlen == hoff &&
+	    sc->csum_thlen == thoff &&
+	    sc->csum_mss == mss &&
+	    sc->csum_pktlen == pktlen) {
+		*txd_upper = sc->csum_txd_upper;
+		*txd_lower = sc->csum_txd_lower;
+#ifdef EMX_TSO_DEBUG
+		sc->tso_ctx_reused++;
+#endif
+		return 0;
+	}
+	hlen = hoff + iphlen + thoff;
+
+	/*
+	 * Setup a new TSO context.
+	 */
+
+	curr_txd = sc->next_avail_tx_desc;
+	TXD = (struct e1000_context_desc *)&sc->tx_desc_base[curr_txd];
+
+	*txd_lower = E1000_TXD_CMD_DEXT |	/* Extended descr type */
+		     E1000_TXD_DTYP_D |		/* Data descr type */
+		     E1000_TXD_CMD_TSE;		/* Do TSE on this packet */
+
+	/* IP and/or TCP header checksum calculation and insertion. */
+	*txd_upper = (E1000_TXD_POPTS_IXSM | E1000_TXD_POPTS_TXSM) << 8;
+
+	/*
+	 * Start offset for header checksum calculation.
+	 * End offset for header checksum calculation.
+	 * Offset of place put the checksum.
+	 */
+	TXD->lower_setup.ip_fields.ipcss = hoff;
+	TXD->lower_setup.ip_fields.ipcse = htole16(hoff + iphlen - 1);
+	TXD->lower_setup.ip_fields.ipcso = hoff + offsetof(struct ip, ip_sum);
+
+	/*
+	 * Start offset for payload checksum calculation.
+	 * End offset for payload checksum calculation.
+	 * Offset of place to put the checksum.
+	 */
+	TXD->upper_setup.tcp_fields.tucss = hoff + iphlen;
+	TXD->upper_setup.tcp_fields.tucse = 0;
+	TXD->upper_setup.tcp_fields.tucso =
+	    hoff + iphlen + offsetof(struct tcphdr, th_sum);
+
+	/*
+	 * Payload size per packet w/o any headers.
+	 * Length of all headers up to payload.
+	 */
+	TXD->tcp_seg_setup.fields.mss = htole16(mss);
+	TXD->tcp_seg_setup.fields.hdr_len = hlen;
+	TXD->cmd_and_length = htole32(E1000_TXD_CMD_IFCS |
+				E1000_TXD_CMD_DEXT |	/* Extended descr */
+				E1000_TXD_CMD_TSE |	/* TSE context */
+				E1000_TXD_CMD_IP |	/* Do IP csum */
+				E1000_TXD_CMD_TCP |	/* Do TCP checksum */
+				(pktlen - hlen));	/* Total len */
+
+	/* Save the information for this TSO context */
+	sc->csum_flags = CSUM_TSO;
+	sc->csum_lhlen = hoff;
+	sc->csum_iphlen = iphlen;
+	sc->csum_thlen = thoff;
+	sc->csum_mss = mss;
+	sc->csum_pktlen = pktlen;
+	sc->csum_txd_upper = *txd_upper;
+	sc->csum_txd_lower = *txd_lower;
+
+	if (++curr_txd == sc->num_tx_desc)
+		curr_txd = 0;
+
+	KKASSERT(sc->num_tx_desc_avail > 0);
+	sc->num_tx_desc_avail--;
+
+	sc->next_avail_tx_desc = curr_txd;
+	return 1;
 }

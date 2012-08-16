@@ -121,8 +121,6 @@
 #include <bus/pci/pcireg.h>
 #include <bus/pci/pcivar.h>
 
-#include "opt_ddb.h"
-
 /**************************** Register Definitions ****************************/
 #include <dev/disk/mpt/mpt_reg.h>
 
@@ -646,7 +644,10 @@ struct mpt_softc {
 	/*
 	 * PCI Hardware info
 	 */
+#ifdef OLD_MSI
 	int			pci_msi_count;
+#endif
+	int			irq_type;	/* Interrupt type */
 	struct resource *	pci_irq;	/* Interrupt map for chip */
 	void *			ih;		/* Interrupt handle */
 #if 0

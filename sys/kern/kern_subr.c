@@ -39,8 +39,6 @@
  * $FreeBSD: src/sys/kern/kern_subr.c,v 1.31.2.2 2002/04/21 08:09:37 bde Exp $
  */
 
-#include "opt_ddb.h"
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -118,9 +116,9 @@ uiomove(caddr_t cp, size_t n, struct uio *uio)
 
 		case UIO_SYSSPACE:
 			if (uio->uio_rw == UIO_READ)
-				bcopy((caddr_t)cp, iov->iov_base, cnt);
+				bcopy(cp, iov->iov_base, cnt);
 			else
-				bcopy(iov->iov_base, (caddr_t)cp, cnt);
+				bcopy(iov->iov_base, cp, cnt);
 			break;
 		case UIO_NOCOPY:
 			break;
@@ -265,6 +263,17 @@ hashinit(int elements, struct malloc_type *type, u_long *hashmask)
 		LIST_INIT(&hashtbl[i]);
 	*hashmask = hashsize - 1;
 	return (hashtbl);
+}
+
+void
+hashdestroy(void *vhashtbl, struct malloc_type *type, u_long hashmask)
+{
+	LIST_HEAD(generic, generic) *hashtbl, *hp;
+
+	hashtbl = vhashtbl;
+	for (hp = hashtbl; hp <= &hashtbl[hashmask]; hp++)
+		KASSERT(LIST_EMPTY(hp), ("%s: hash not empty", __func__));
+	kfree(hashtbl, type);
 }
 
 /*

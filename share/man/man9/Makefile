@@ -7,6 +7,7 @@ MAN=	accept_filter.9 \
 	altq.9 \
 	at_exit.9 \
 	at_fork.9 \
+	atomic.9 \
 	bios.9 \
 	boot.9 \
 	buf.9 \
@@ -30,10 +31,12 @@ MAN=	accept_filter.9 \
 	callout.9 \
 	cd.9 \
 	condvar.9 \
+	config_intrhook.9 \
 	contigmalloc.9 \
 	copy.9 \
 	crit_enter.9 \
 	crypto.9 \
+	DB_COMMAND.9 \
 	DECLARE_MODULE.9 \
 	DELAY.9 \
 	devclass.9 \
@@ -80,6 +83,7 @@ MAN=	accept_filter.9 \
 	fetch.9 \
 	firmware.9 \
 	hash.9 \
+	hashinit.9 \
 	hexdump.9 \
 	ieee80211.9 \
 	ieee80211_beacon.9 \
@@ -112,6 +116,7 @@ MAN=	accept_filter.9 \
 	make_dev.9 \
 	mbuf.9 \
 	MD5.9 \
+	memcchr.9 \
 	memory.9 \
 	microseq.9 \
 	microtime.9 \
@@ -367,6 +372,8 @@ MLINKS+=condvar.9 cv_broadcast.9 \
 	condvar.9 cv_timedwait_sig.9 \
 	condvar.9 cv_wait.9 \
 	condvar.9 cv_wait_sig.9
+MLINKS+=config_intrhook.9 config_intrhook_disestablish.9 \
+	config_intrhook.9 config_intrhook_establish.9
 MLINKS+=contigmalloc.9 contigfree.9
 MLINKS+=copy.9 copyin.9 \
 	copy.9 copyinstr.9 \
@@ -394,6 +401,7 @@ MLINKS+=crypto.9 crypto_dispatch.9 \
 	crypto.9 crypto_unblock.9 \
 	crypto.9 crypto_unregister.9 \
 	crypto.9 crypto_unregister_all.9
+MLINKS+=DB_COMMAND.9 DB_SHOW_COMMAND.9
 MLINKS+=devclass_add_driver.9 devclass_delete_driver.9 \
 	devclass_add_driver.9 devclass_find_driver.9
 MLINKS+=device_add_child.9 device_add_child_ordered.9
@@ -446,10 +454,16 @@ MLINKS+=firmware.9 firmware_get.9 \
 	firmware.9 firmware_put.9 \
 	firmware.9 firmware_register.9 \
 	firmware.9 firmware_unregister.9
-MLINKS+=hash.9 hashinit.9 \
-	hash.9 hashinit_ext.9 \
-	hash.9 phashinit.9 \
-	hash.9 phashinit_ext.9
+MLINKS+=hash.9 hash32.9 \
+	hash.9 hash32_buf.9 \
+	hash.9 hash32_str.9 \
+	hash.9 hash32_stre.9 \
+	hash.9 hash32_strn.9 \
+	hash.9 hash32_strne.9
+MLINKS+=hashinit.9 hashdestroy.9 \
+	hashinit.9 hashinit_ext.9 \
+	hashinit.9 phashinit.9 \
+	hashinit.9 phashinit_ext.9
 MLINKS+=ioctl.9 _IOR.9 \
 	ioctl.9 _IOW.9 \
 	ioctl.9 _IOWR.9 \
