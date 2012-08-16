@@ -783,7 +783,7 @@ inotify_close(struct file *fp)
 	iw = TAILQ_FIRST(&ih->wlh);
 	while (iw != NULL) {
 		iw2 = TAILQ_NEXT(iw, watchlist);
-		/*knote_fdclose(iw->fp, ih->wfdp, iw->wd);*/
+		knote_fdclose(iw->fp, ih->wfdp, iw->wd);
 		iw->iw_qrefs = 0;
 		inotify_delete_watch(iw);
 		iw = iw2;
