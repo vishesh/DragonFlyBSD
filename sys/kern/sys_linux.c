@@ -782,7 +782,7 @@ inotify_close(struct file *fp)
 	iw = TAILQ_FIRST(&ih->wlh);
 	while (iw != NULL) {
 		iw2 = TAILQ_NEXT(iw, watchlist);
-		knote_fdclose(iw->fp, ih->wfdp, iw->wd);
+		/*knote_fdclose(iw->fp, ih->wfdp, iw->wd);*/
 		iw->iw_qrefs = 0;
 		inotify_delete_watch(iw);
 		iw = iw2;
@@ -803,7 +803,8 @@ inotify_close(struct file *fp)
 		vrele(fdp->fd_jdir);
 	}
 
-	kqueue_terminate(&ih->kq);
+	/*kqueue_terminate(&ih->kq);*/
+	kfree(ih, M_INOTIFY);
 
 	return (0);
 }
@@ -817,6 +818,7 @@ inotify_stat(struct file *fp, struct stat *st, struct ucred *cred)
 }
 
 /*ARGSUSED*/
+/*#if 0*/
 static int
 filt_inotifyread(struct knote *kn, long hint)
 {
@@ -848,6 +850,7 @@ filt_inotifydetach(struct knote *kn)
 
 static struct filterops inotifyread_filtops =
 	{ FILTEROP_ISFD, NULL, filt_inotifydetach, filt_inotifyread };
+/*#endif*/
 
 int
 inotify_kqfilter(struct file *fp, struct knote *kn)
@@ -864,7 +867,6 @@ inotify_kqfilter(struct file *fp, struct knote *kn)
 
 	kn->kn_hook = (caddr_t)vp;
 
-	/* XXX: kq token actually protects the list */
 	lwkt_gettoken(&vp->v_token);
 	knote_insert(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
 	lwkt_reltoken(&vp->v_token);
@@ -891,7 +893,9 @@ inotify_find_watch(struct inotify_handle *ih, const char *path)
 	struct inotify_watch *iw;
 
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
-		if (iw->parent != NULL && strcmp(iw->pathname, path) == 0)
+		if (iw->parent != NULL || iw->pathname == NULL)
+			continue;
+		if (strcmp(iw->pathname, path) == 0)
 			return (iw);
 	}
 	return (NULL);
