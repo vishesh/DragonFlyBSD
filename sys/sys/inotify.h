@@ -42,6 +42,7 @@
 
 #include <sys/stdint.h>
 #include <sys/types.h>
+#include <sys/fcntl.h>
 
 #define IN_CLOEXEC  FD_CLOEXEC
 #define IN_NONBLOCK O_NONBLOCK
@@ -96,7 +97,6 @@ struct inotify_event {
 #define IW_WATCH_DELETE		0x04
 
 #include <sys/eventvar.h>
-#include <sys/fcntl.h>
 #include <sys/filedesc.h>
 
 struct inotify_ucount {
