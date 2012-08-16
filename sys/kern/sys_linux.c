@@ -37,6 +37,7 @@
 #include <sys/dirent.h>
 #include <sys/file.h>
 #include <sys/file2.h>
+#include <sys/fcntl.h>
 /*#include <sys/idr.h>*/
 #include <sys/kern_syscall.h>
 #include <sys/kernel.h>
@@ -303,7 +304,7 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	struct inotify_ucount *iuc;
 	char path[MAXPATHLEN];
 	int fd = args->fd, error, res = -1;
-	uint32_t pathlen;
+	size_t pathlen;
 
 	fp = proc->p_fd->fd_files[fd].fp;
 	ih = (struct inotify_handle*)fp->f_data;
