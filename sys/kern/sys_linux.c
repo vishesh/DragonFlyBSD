@@ -142,10 +142,8 @@ fp_open_at(const char *path, int flags, int mode, struct file *rfp,
 	if ((error = falloc(NULL, fpp, NULL)) != 0)
 		return (error);
 	fp = *fpp;
-	if (td->td_proc) {
-		if ((flags & O_ROOTCRED) == 0)
-			fsetcred(fp, td->td_proc->p_ucred);
-	}
+	if (td->td_proc)
+		fsetcred(fp, td->td_proc->p_ucred);
 
 	if  ((error = nlookup_init(&nd, path, UIO_SYSSPACE, NLC_LOCKVP)) != 0)
 		goto done;
