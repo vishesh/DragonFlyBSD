@@ -1222,6 +1222,11 @@ inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 	iw = ikap->last_iw;
 
 	while ( iw != NULL && *events < maxevents) {
+		/* Update the masks, as we just update parent's
+		 * mask in inotify_add_watch function.
+		 */
+		if (iw->parent != NULL)
+			iw->mask = iw->parent->mask;
 		kev = &kevp[*events];
 		error = inotify_to_kevent(iw, kev);
 		++ikap->count;
