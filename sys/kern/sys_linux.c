@@ -54,12 +54,9 @@
 #include <sys/sysproto.h>
 #include <sys/vnode.h>
 
-/* TODO: Find and replace with inotify_flags */
-/* TODO: IN_ISDIR for watch files */
 /* TODO: cleanup unnecessary structures and memory allocations. 
  	Directly use inotify_events in copyout. */
 /* TODO: Better cleanup and memory management */
-/* TODO: Optimize */
 
 #define INOTIFY_EVENT_SIZE	(sizeof (struct inotify_event))
 
@@ -237,7 +234,6 @@ sys_inotify_init1(struct inotify_init1_args *args)
 	return (error);
 }
 
-/* TODO: Set appropriate flags */
 static int
 inotify_init(int flags, int *result)
 {	
@@ -255,7 +251,7 @@ inotify_init(int flags, int *result)
 	if (flags & ~(IN_CLOEXEC | IN_NONBLOCK))
 		return (EINVAL);
 
-	ih = kmalloc(sizeof(struct inotify_handle), M_INOTIFY, M_WAITOK);
+	ih = kmalloc(sizeof(struct inotify_handle), M_INOTIFY, M_WAITOK|M_ZERO);
 	if (ih == NULL) {
 		error = ENOMEM;
 		goto done;
@@ -281,6 +277,10 @@ inotify_init(int flags, int *result)
 	fp->f_flag = FREAD;
 	fp->f_type = DTYPE_INOTIFY;
 	fsetfd(td->td_proc->p_fd, fp, fd);
+	if ((flags & IN_CLOEXEC) > 0)
+		fsetfdflags(td->td_proc->p_fd, fd, UF_EXCLOSE);
+	if ((flags & IN_NONBLOCK) > 0)
+		fd->f_flag |= O_NONBLOCK;
 	fdrop(fp);
 
 	ih->wfdp = fdinit(curthread->td_proc);
@@ -470,6 +470,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 
 	/* Now check if its a directory and get the entries */
 	if (st.st_mode & S_IFDIR) {
+		iw->iw_marks |= IW_DIR_WATCH;
 		++iw->childs;
 
 		error = nlookup_init(&nd, path, UIO_SYSSPACE, NLC_FOLLOW);
@@ -692,7 +693,6 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			eventlen = INOTIFY_EVENT_SIZE;
 			if ((iqe->mask & IN_CREATE) > 0 ||
 					(iqe->mask & IN_MOVED_TO) > 0) {
-				ie->mask = IN_ISDIR;
 				ie->len = iqe->namelen + 1;
 				eventlen += ie->len;
 				strcpy(ie->name, iqe->name);
@@ -701,6 +701,8 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 				ie->mask = 0;
 				ie->len = 0;
 			}
+			if ((iw->iw_marks & IW_DIR_WATCH) > 0)
+				ie->mask |= IN_ISDIR;
 			ie->wd = iw->wd;
 
 		} else {
@@ -802,7 +804,7 @@ inotify_close(struct file *fp)
 		vrele(fdp->fd_jdir);
 	}
 
-	/*kqueue_terminate(&ih->kq);*/
+	kqueue_terminate(&ih->kq);
 	kfree(ih, M_INOTIFY);
 
 	return (0);
