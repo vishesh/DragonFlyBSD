@@ -130,7 +130,9 @@ MLINKS+=gettimeofday.2 settimeofday.2
 MLINKS+=getuid.2 geteuid.2
 MLINKS+=intro.2 errno.2
 MLINKS+=inotify.2 inotify_add_watch.2 \
-        inotify_rm_watch.2 inotify_init.2 inotify_init1.2
+        inotify.2 inotify_rm_watch.2 \
+        inotify.2 inotify_init.2 \
+        inotify.2 inotify_init1.2
 MLINKS+=ioprio_get.2 ioprio_set.2
 MLINKS+=kqueue.2 EV_SET.2 \
 	kqueue.2 kevent.2
