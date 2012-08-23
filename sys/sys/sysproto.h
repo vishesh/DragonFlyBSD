@@ -2375,6 +2375,33 @@ struct	linkat_args {
 	char *	path2;	char path2_[PAD_(char *)];
 	int	flags;	char flags_[PAD_(int)];
 };
+struct	inotify_init_args {
+#ifdef _KERNEL
+	struct sysmsg sysmsg;
+#endif
+	register_t dummy;
+};
+struct	inotify_init1_args {
+#ifdef _KERNEL
+	struct sysmsg sysmsg;
+#endif
+	int	flags;	char flags_[PAD_(int)];
+};
+struct	inotify_add_watch_args {
+#ifdef _KERNEL
+	struct sysmsg sysmsg;
+#endif
+	int	fd;	char fd_[PAD_(int)];
+	const char *	pathname;	char pathname_[PAD_(const char *)];
+	uint32_t	mask;	char mask_[PAD_(uint32_t)];
+};
+struct	inotify_rm_watch_args {
+#ifdef _KERNEL
+	struct sysmsg sysmsg;
+#endif
+	int	fd;	char fd_[PAD_(int)];
+	int	wd;	char wd_[PAD_(int)];
+};
 
 #ifdef COMPAT_43
 
@@ -2993,6 +3020,10 @@ int	sys_symlinkat (struct symlinkat_args *);
 int	sys_swapoff (struct swapoff_args *);
 int	sys_vquotactl (struct vquotactl_args *);
 int	sys_linkat (struct linkat_args *);
+int	sys_inotify_init (struct inotify_init_args *);
+int	sys_inotify_init1 (struct inotify_init1_args *);
+int	sys_inotify_add_watch (struct inotify_add_watch_args *);
+int	sys_inotify_rm_watch (struct inotify_rm_watch_args *);
 
 #endif /* !_SYS_SYSPROTO_H_ */
 #undef PAD_

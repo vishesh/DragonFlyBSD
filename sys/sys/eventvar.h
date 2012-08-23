@@ -69,6 +69,7 @@ struct kqueue {
 
 #define KQ_SLEEP	0x02
 #define KQ_ASYNC	0x04
+#define KQ_DATASYS	0x08	/* data in kevent is in sys space */
 
 #endif	/* _KERNEL */
 #endif	/* !_SYS_EVENTVAR_H_ */
