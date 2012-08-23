@@ -133,6 +133,18 @@ union _qcvt {
 #define VN_KNOTE(vp, b) \
 	KNOTE(&vp->v_pollinfo.vpi_kqinfo.ki_note, (b))
 
+#define VN_KNOTE_DATA(vp, h, s, l) \
+	KNOTE_DATA(&vp->v_pollinfo.vpi_kqinfo.ki_note, (h), (s), (l))
+
+static __inline
+void
+VN_KNOTE_COOKIE(struct vnode *v1, char *n1, int l1,
+		struct vnode *v2, char *n2, int l2)
+{
+	KNOTE_COOKIE(&v1->v_pollinfo.vpi_kqinfo.ki_note, (n1), (l1),
+			&v2->v_pollinfo.vpi_kqinfo.ki_note, (n2), (l2));
+}
+
 #define OFSFMT(vp)		((vp)->v_mount->mnt_maxsymlinklen <= 0)
 
 /*
@@ -197,6 +209,9 @@ ufs_create(struct vop_old_create_args *ap)
 	if (error)
 		return (error);
 	VN_KNOTE(ap->a_dvp, NOTE_WRITE);
+	VN_KNOTE_DATA(ap->a_dvp, NOTE_CREATE, ap->a_cnp->cn_nameptr,
+			ap->a_cnp->cn_namelen);
+	VN_KNOTE(ap->a_dvp, NOTE_CREATE);
 	return (0);
 }
 
@@ -277,6 +292,7 @@ ufs_close(struct vop_close_args *ap)
 
 	if (vp->v_sysref.refcnt > 1)
 		ufs_itimes(vp);
+
 	return (vop_stdclose(ap));
 }
 
@@ -725,6 +741,10 @@ out1:
 		vn_unlock(vp);
 out2:
 	VN_KNOTE(vp, NOTE_LINK);
+	/* XXX: wrong info when just link count is changed */
+	VN_KNOTE_DATA(tdvp, NOTE_CREATE|NOTE_LINK, cnp->cn_nameptr,
+			cnp->cn_namelen);
+	VN_KNOTE(tdvp, NOTE_CREATE);
 	VN_KNOTE(tdvp, NOTE_WRITE);
 	return (error);
 }
@@ -1216,7 +1236,11 @@ abortit:
 		xp->i_flag &= ~IN_RENAME;
 	}
 
+	/*VN_KNOTE_DATA(fvp, NOTE_RENAME, fcnp->cn_nameptr, fcnp->cn_namelen);*/
+	VN_KNOTE_COOKIE(fvp, fcnp->cn_nameptr, fcnp->cn_namelen,
+			tdvp, tcnp->cn_nameptr, tcnp->cn_namelen);
 	VN_KNOTE(fvp, NOTE_RENAME);
+
 	vput(fdvp);
 	vput(fvp);
 	vrele(ap->a_fvp);
@@ -1423,6 +1447,9 @@ ufs_mkdir(struct vop_old_mkdir_args *ap)
 	
 bad:
 	if (error == 0) {
+		VN_KNOTE_DATA(ap->a_dvp, NOTE_CREATE, cnp->cn_nameptr,
+				cnp->cn_namelen);
+		VN_KNOTE(ap->a_dvp, NOTE_CREATE);
 		VN_KNOTE(dvp, NOTE_WRITE | NOTE_LINK);
 		*ap->a_vpp = tvp;
 	} else {
@@ -1558,6 +1585,9 @@ ufs_symlink(struct vop_old_symlink_args *ap)
 	if (error)
 		return (error);
 	VN_KNOTE(ap->a_dvp, NOTE_WRITE);
+	VN_KNOTE_DATA(ap->a_dvp, NOTE_CREATE, ap->a_cnp->cn_nameptr,
+			ap->a_cnp->cn_namelen);
+	VN_KNOTE(ap->a_dvp, NOTE_CREATE);
 	vp = *vpp;
 	len = strlen(ap->a_target);
 	if (len < vp->v_mount->mnt_maxsymlinklen) {

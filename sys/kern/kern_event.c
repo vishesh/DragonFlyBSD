@@ -31,6 +31,7 @@
 #include <sys/kernel.h>
 #include <sys/proc.h>
 #include <sys/malloc.h> 
+#include <sys/namei.h>
 #include <sys/unistd.h>
 #include <sys/file.h>
 #include <sys/lock.h>
@@ -41,6 +42,7 @@
 #include <sys/protosw.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
+#include <sys/spinlock2.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/sysproto.h>
@@ -148,6 +150,10 @@ SYSCTL_INT(_kern, OID_AUTO, kq_checkloop, CTLFLAG_RW,
 
 extern struct filterops aio_filtops;
 extern struct filterops sig_filtops;
+
+static int inotify_cookie = 0;
+static struct spinlock inotify_cookie_lock
+		= SPINLOCK_INITIALIZER(inotify_cookie_lock);
 
 /*
  * Table for for all system-defined filters.
@@ -1326,6 +1332,98 @@ filter_event(struct knote *kn, long hint)
 		rel_mplock();
 	}
 	return (ret);
+}
+
+/**
+ * This is used to bind NOTE_MOVED_FROM and NOTE_MOVED_TO
+ * events using a unique integer, to identify renames. The
+ * kn_sdata memeber of knote points to the list head whose
+ * each entry contains the name.
+ */
+void
+knote_cookie(struct klist *list1, char *n1, int l1,
+		struct klist *list2, char *n2, int l2)
+{
+	struct knote *kn;
+	struct kevent *kevp;
+	struct kevent_note_entry *knep;
+	int cookie;
+	TAILQ_HEAD(kneh, kevent_note_entry) *head;
+	spin_lock(&inotify_cookie_lock);
+	cookie = ++inotify_cookie;
+	spin_unlock(&inotify_cookie_lock);
+
+	/* Append the old file name with NOTE_MOVED_FROM hint */
+	SLIST_FOREACH(kn, list1, kn_next) {
+		kevp = &kn->kn_kevent;
+		if (kn->kn_sdata == 0)
+			continue;
+
+		if (kn->kn_kq->kq_state & KQ_DATASYS) {
+			head = (struct kneh *)kn->kn_sdata;
+			knep = kmalloc(sizeof *knep + l1 + 1, M_KQUEUE, M_WAITOK);
+			knep->cookie = cookie;
+			knep->hint = NOTE_MOVED_FROM;
+			strcpy((char*)&knep->data, n1);
+			kevp->data = kn->kn_sdata;
+			TAILQ_INSERT_TAIL(head, knep, entries);
+		} else if (kn->kn_sdata != 0) {
+			copyout((void *)n1, (void *)kevp->data, l1);
+		}
+	}
+	knote(list1, NOTE_MOVED_FROM);
+
+	/* Append the new file name with NOTE_MOVED_FROM hint */
+	SLIST_FOREACH(kn, list2, kn_next) {
+		kevp = &kn->kn_kevent;
+		if (kn->kn_sdata == 0)
+			continue;
+
+		if (kn->kn_kq->kq_state & KQ_DATASYS) {
+			head = (struct kneh *)kn->kn_sdata;
+			knep = kmalloc(sizeof *knep + l2 + 1, M_KQUEUE, M_WAITOK);
+			knep->cookie = cookie;
+			knep->hint = NOTE_MOVED_TO;
+			strcpy((char*)&knep->data, n2);
+			kevp->data = kn->kn_sdata;
+			TAILQ_INSERT_TAIL(head, knep, entries);
+		}
+	}
+	knote(list2, NOTE_MOVED_TO);
+}
+
+/* Sets data paremeter for all kevents in list. Used by NOTE_CREATE
+ * to set the filename of the newly created file. The data is expected
+ * to be list, to which we append 'name' so that in case of merging of 
+ * knotes we don't lose earlier data.
+ */
+void
+knote_data(struct klist *list, int hint, char *name, int len)
+{
+	struct knote *kn;
+	struct kevent *kevp;
+	struct kevent_note_entry *knep;
+	TAILQ_HEAD(kneh, kevent_note_entry) *head;
+
+	SLIST_FOREACH(kn, list, kn_next) {
+		kevp = &kn->kn_kevent;
+		if (kn->kn_sdata == 0)
+			continue;
+
+		if ((hint & NOTE_CREATE) > 0 || (hint & NOTE_MOVED_TO) > 0) {
+			if (kn->kn_kq->kq_state & KQ_DATASYS) {
+				head = (struct kneh *)kn->kn_sdata;
+				knep = kmalloc(sizeof *knep + len + 1, M_KQUEUE, M_WAITOK);
+				knep->cookie = 0;
+				knep->hint = hint;
+				strcpy((char*)&knep->data, name);
+				kevp->data = kn->kn_sdata;
+				TAILQ_INSERT_TAIL(head, knep, entries);
+			} else if (kn->kn_sdata != 0) {
+				copyout((void *)name, (void *)kevp->data, len);
+			}
+		}
+	}
 }
 
 /*

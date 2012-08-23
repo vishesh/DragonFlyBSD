@@ -300,4 +300,8 @@ MIASM =  \
 	swapoff.o \
 	vquotactl.o \
 	linkat.o \
-	eaccess.o
+	eaccess.o \
+	inotify_init.o \
+	inotify_init1.o \
+	inotify_add_watch.o \
+	inotify_rm_watch.o

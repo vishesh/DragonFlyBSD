@@ -541,4 +541,8 @@ const char *syscallnames[] = {
 	"vquotactl",			/* 530 = vquotactl */
 	"linkat",			/* 531 = linkat */
 	"eaccess",			/* 532 = eaccess */
+	"inotify_init",			/* 533 = inotify_init */
+	"inotify_init1",			/* 534 = inotify_init1 */
+	"inotify_add_watch",			/* 535 = inotify_add_watch */
+	"inotify_rm_watch",			/* 536 = inotify_rm_watch */
 };

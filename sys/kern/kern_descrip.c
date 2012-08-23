@@ -1610,7 +1610,7 @@ fsetfd(struct filedesc *fdp, struct file *fp, int fd)
 /*
  * MPSAFE (exclusive spinlock must be held on call)
  */
-static 
+static
 struct file *
 funsetfd_locked(struct filedesc *fdp, int fd)
 {
@@ -1626,6 +1626,19 @@ funsetfd_locked(struct filedesc *fdp, int fd)
 	fdreserve_locked(fdp, fd, -1);
 	fdfixup_locked(fdp, fd);
 	return(fp);
+}
+
+/*
+ * MPSAFE
+ */
+struct file *
+funsetfd(struct filedesc *fdp, int fd)
+{
+	struct file *fp;
+	spin_lock(&fdp->fd_spin);
+	fp = funsetfd_locked(fdp, fd);
+	spin_unlock(&fdp->fd_spin);
+	return fp;
 }
 
 /*

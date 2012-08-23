@@ -112,6 +112,16 @@ struct kevent {
 #define	NOTE_RENAME	0x0020			/* vnode was renamed */
 #define	NOTE_REVOKE	0x0040			/* vnode access was revoked */
 
+#define NOTE_ACCESS		0x0080	/* vnode was accessed */
+#define NOTE_OPEN		0x0100	/* vnode was opened */
+#define NOTE_CLOSE_WRITE	0x0200	/* vnode opened for writing closed */
+#define NOTE_CLOSE_NOWRITE	0x0400	/* vnode not opened for writing closed*/
+#define NOTE_CREATE		0x0800	/* file/dir created in directory */
+#define NOTE_MOVED_TO		0x1000	/* vnode moved into directory */
+#define NOTE_MOVED_FROM		0x2000	/* vnode moved out of directory */
+
+#define NOTE_CLOSE	(NOTE_CLOSE_WRITE | NOTE_CLOSE_NOWRITE)
+
 /*
  * data/hint flags for EVFILT_PROC, shared with userspace
  */
@@ -154,6 +164,11 @@ MALLOC_DECLARE(M_KQUEUE);
 #endif
 
 #define KNOTE(list, hint)	if ((list) != NULL) knote(list, hint)
+#define KNOTE_DATA(list, hint, str, len)				\
+	if ((list) != NULL) knote_data((list), (hint), (str), (len))
+#define KNOTE_COOKIE(lst1, s1, l1, lst2, n2, l2)			\
+	if ((lst1) != NULL && (lst2) != NULL)				\
+		knote_cookie((lst1), (n1), (l1), (lst2), (n2), (l2))
 
 /*
  * Flag indicating hint is a signal.  Used by EVFILT_SIGNAL, and also
@@ -197,6 +212,13 @@ struct knote {
 	caddr_t			kn_hook;
 };
 
+struct kevent_note_entry {
+	TAILQ_ENTRY(kevent_note_entry) entries;
+	int	 hint;
+	int	 cookie;
+	void	*data;
+};
+
 #define KN_ACTIVE	0x0001			/* event has been triggered */
 #define KN_QUEUED	0x0002			/* event is on queue */
 #define KN_DISABLED	0x0004			/* event is disabled */
@@ -227,6 +249,9 @@ int kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
     struct timespec *tsp);
 
 extern void	knote(struct klist *list, long hint);
+extern void	knote_data(struct klist *list, int hint, char *name, int len);
+extern void	knote_cookie(struct klist *list1, char *n1, int l1,
+			struct klist *list2, char *n2, int l2);
 extern void	knote_insert(struct klist *klist, struct knote *kn);
 extern void	knote_remove(struct klist *klist, struct knote *kn);
 /*extern void	knote_empty(struct klist *list);*/

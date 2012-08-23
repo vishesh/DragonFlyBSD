@@ -217,6 +217,10 @@ ffs_read(struct vop_read_args *ap)
 	if ((error == 0 || uio->uio_resid != orig_resid) &&
 	    (vp->v_mount->mnt_flag & MNT_NOATIME) == 0)
 		ip->i_flag |= IN_ACCESS;
+
+	if (error == 0)
+		VN_KNOTE(vp, NOTE_ACCESS);
+
 	return (error);
 }
 

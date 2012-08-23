@@ -373,4 +373,8 @@
 #define	SYS_vquotactl	530
 #define	SYS_linkat	531
 #define	SYS_eaccess	532
-#define	SYS_MAXSYSCALL	533
+#define	SYS_inotify_init	533
+#define	SYS_inotify_init1	534
+#define	SYS_inotify_add_watch	535
+#define	SYS_inotify_rm_watch	536
+#define	SYS_MAXSYSCALL	537

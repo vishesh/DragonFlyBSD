@@ -748,3 +748,9 @@
 531	STD	POSIX	{ int linkat(int fd1, char *path1, int fd2, \
 				char *path2, int flags); }
 532	STD	BSD	{ int eaccess(char *path, int flags); }
+; inotify system calls
+533	STD	BSD	{ int inotify_init(void); }
+534	STD	BSD	{ int inotify_init1(int flags); }
+535	STD	BSD	{ int inotify_add_watch(int fd, const char *pathname, uint32_t mask); }
+536	STD	BSD	{ int inotify_rm_watch(int fd, int wd); }
+

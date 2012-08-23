@@ -569,4 +569,8 @@ struct sysent sysent[] = {
 	{ AS(vquotactl_args), (sy_call_t *)sys_vquotactl },	/* 530 = vquotactl */
 	{ AS(linkat_args), (sy_call_t *)sys_linkat },	/* 531 = linkat */
 	{ AS(eaccess_args), (sy_call_t *)sys_eaccess },	/* 532 = eaccess */
+	{ 0, (sy_call_t *)sys_inotify_init },		/* 533 = inotify_init */
+	{ AS(inotify_init1_args), (sy_call_t *)sys_inotify_init1 },	/* 534 = inotify_init1 */
+	{ AS(inotify_add_watch_args), (sy_call_t *)sys_inotify_add_watch },	/* 535 = inotify_add_watch */
+	{ AS(inotify_rm_watch_args), (sy_call_t *)sys_inotify_rm_watch },	/* 536 = inotify_rm_watch */
 };

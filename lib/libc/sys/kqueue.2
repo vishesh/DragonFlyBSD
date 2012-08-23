@@ -331,6 +331,20 @@ The link count on the file changed.
 The file referenced by the descriptor was renamed.
 .It Dv NOTE_REVOKE
 Access to the file was revoked via
+.It Dv NOTE_ACCESS
+File was accessed (read).
+.It Dv NOTE_OPEN
+File was opened in the directory referenced by the descriptor.
+.It Dv NOTE_CLOSE_WRITE
+File opened for writing was closed.
+.It Dv NOTE_CLOSE_NOWRITE
+File opened not for writing was closed.
+.It Dv NOTE_CREATE
+File/Directory was created in the directory references by the descriptor.
+.It Dv NOTE_MOVED_TO
+File/Directory moved into the directory references by the descriptor.
+.It Dv NOTE_MOVED_FROM
+File/Directory moved out of the directory references by the descriptor.
 .Xr revoke 2
 or the underlying fileystem was unmounted.
 .El

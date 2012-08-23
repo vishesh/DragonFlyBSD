@@ -67,8 +67,8 @@ MAN+=	_exit.2 accept.2 access.2 acct.2 adjtime.2 \
 	getpeername.2 getpgrp.2 getpid.2 getpriority.2 getrlimit.2 \
 	getrusage.2 getsid.2 getsockname.2 \
 	getsockopt.2 gettimeofday.2 getuid.2 \
-	intro.2 ioctl.2 ioprio_get.2 issetugid.2 jail.2 jail_attach.2 kill.2 \
-	kldfind.2 kldfirstmod.2 kldload.2 kldnext.2 kldstat.2 kldsym.2 \
+	intro.2 inotify.2 ioctl.2 ioprio_get.2 issetugid.2 jail.2 jail_attach.2
+        kill.2 kldfind.2 kldfirstmod.2 kldload.2 kldnext.2 kldstat.2 kldsym.2 \
 	kldunload.2 ktrace.2 kqueue.2 link.2 listen.2 lseek.2 \
 	lwp_create.2 lwp_gettid.2 lwp_kill.2 \
 	madvise.2 mincore.2 minherit.2 mkdir.2 mkfifo.2 mknod.2 mlock.2 \
@@ -124,6 +124,10 @@ MLINKS+=getsockopt.2 setsockopt.2
 MLINKS+=gettimeofday.2 settimeofday.2
 MLINKS+=getuid.2 geteuid.2
 MLINKS+=intro.2 errno.2
+MLINKS+=inotify.2 inotify_add_watch.2 \
+        inotify.2 inotify_rm_watch.2 \
+        inotify.2 inotify_init.2 \
+        inotify.2 inotify_init1.2
 MLINKS+=ioprio_get.2 ioprio_set.2
 MLINKS+=kqueue.2 EV_SET.2 \
 	kqueue.2 kevent.2
