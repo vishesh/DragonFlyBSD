@@ -74,7 +74,7 @@ enum _INOTIFY_FLAGS {
 
 	IN_ALL_EVENTS	    =	(IN_ACCESS | IN_MODIFY | IN_ATTRIB | IN_CLOSE_WRITE |
 				 IN_CLOSE_NOWRITE | IN_OPEN | IN_MOVED_FROM |
-				 IN_MOVED_TO | IN_DELETE | IN_CREATE | IN_DELETE_SELF | \
+				 IN_MOVED_TO | IN_DELETE | IN_CREATE | IN_DELETE_SELF |
 				 IN_MOVE_SELF)
 };
 
@@ -101,6 +101,7 @@ struct inotify_event {
 #include <sys/eventvar.h>
 #include <sys/filedesc.h>
 
+/* Keeps counts per user basis */
 struct inotify_ucount {
 	uid_t	ic_uid;	
 	uint	ic_watches;
@@ -109,9 +110,9 @@ struct inotify_ucount {
 };
 
 struct inotify_queue_entry {
+	TAILQ_ENTRY(inotify_queue_entry) entries;
 	struct inotify_watch	*iw;
 	inotify_flags		 mask;
-	TAILQ_ENTRY(inotify_queue_entry) entries;
 	int			 cookie;
 	int			 namelen;
 	char			 name[0];

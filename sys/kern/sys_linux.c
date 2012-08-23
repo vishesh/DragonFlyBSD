@@ -65,8 +65,8 @@ static int	inotify_add_watch(struct inotify_handle *ih, const char *path,
 			uint32_t pathlen, inotify_flags mask, int *res);
 static void	inotify_insert_child(struct inotify_handle *ih,
 			struct inotify_watch *child);
-static struct inotify_watch*  inotify_insert_child_watch(struct inotify_watch *parent,
-				const char *path);
+static struct	inotify_watch* inotify_insert_child_watch(struct inotify_watch *parent,
+			const char *path);
 
 static void	inotify_delete_watch(struct inotify_watch *iw);
 static void	inotify_rm_watch(struct inotify_handle *ih,
@@ -85,11 +85,11 @@ static int	inotify_fdalloc(struct filedesc *fdp, int want, int *result);
 static void	fdgrow_locked(struct filedesc *fdp, int want);
 static void	fdreserve_locked(struct filedesc *fdp, int fd, int incr);
 
-static struct inotify_watch*	inotify_find_watchwd(struct inotify_handle *ih,
-					int wd);
-static struct inotify_watch*	inotify_find_watch(struct inotify_handle *ih,
-					const char *path);
-static struct inotify_ucount*	inotify_find_iuc(uid_t id);
+static struct	inotify_watch* inotify_find_watchwd(struct inotify_handle *ih,
+			int wd);
+static struct	inotify_watch* inotify_find_watch(struct inotify_handle *ih,
+			const char *path);
+static struct	inotify_ucount*	inotify_find_iuc(uid_t id);
 
 static int	inotify_copyin(void *arg, struct kevent *kevp,
 			int maxevents, int *events);
@@ -410,7 +410,6 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path)
 	int wd, error;
 
 	if (iuc->ic_watches >= inotify_max_user_watches) {
-		/* error = ENOSPC; */
 		return (NULL);
 	}
 
@@ -529,7 +528,6 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 			if (error != 0) {
 				goto in_scan_error;
 			}
-			kprintf("Added %s\n", direp->d_name);
 
 			/* watch limit exceeded */
 			if (iuc->ic_watches >= inotify_max_user_watches) {
@@ -892,7 +890,7 @@ inotify_find_watchwd(struct inotify_handle *ih, int wd)
 
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
 		if (iw->wd == wd && iw->parent != NULL)
-			return iw;
+			return (iw);
 	}
 	return (NULL);
 }
