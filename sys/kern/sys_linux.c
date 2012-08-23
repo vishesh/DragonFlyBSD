@@ -316,6 +316,12 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	ih = (struct inotify_handle*)fp->f_data;
 	iuc = ih->iuc;
 
+	if ((args->mask & ~(IN_ALL_EVENTS | IN_DONT_FOLLOW | IN_EXCL_UNLINK |
+			IN_MASK_ADD | IN_ONLYDIR | IN_ONESHOT)) > 0) {
+		error = EINVAL;
+		goto done;
+	}
+
 	if (iuc->ic_watches >= inotify_max_user_watches) {
 		error = ENOSPC;
 		goto done;
@@ -678,6 +684,7 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	struct inotify_watch *iw;
 	struct inotify_queue_entry *iqe, *iqe_temp;
 	struct inotify_event *ie = NULL;
+	struct timespec ts = {0, 0}, *tsp;
 	int error, res = 0, nevents, eventlen;
 	char *watch_name;
 
@@ -689,14 +696,25 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	ika.count = 0;
 	ika.last_iw = TAILQ_FIRST(&ih->wlh);
 
+	if (ih->fp->f_flag & O_NONBLOCK) {
+		tsp = &ts;
+	} else {
+		tsp = NULL;
+	}
 	error = kern_kevent(&ih->kq, nevents, &res, &ika,
-				inotify_copyin, inotify_copyout, NULL);
+				inotify_copyin, inotify_copyout, tsp);
 
 	if (error != 0)
 		goto done;
 
 	TAILQ_FOREACH_MUTABLE(iqe, &ih->eventq, entries, iqe_temp) {
 		iw = iqe->iw;
+
+		if ((iw->mask & IN_EXCL_UNLINK) > 0 &&
+			((iw->mask & IW_MARKED_FOR_DELETE) > 0 ||
+			 (iw->mask & IW_WATCH_DELETE) > 0)) {
+			goto cleanup;
+		}
 
 		if (iw->parent == NULL) {
 			eventlen = INOTIFY_EVENT_SIZE;
@@ -739,6 +757,7 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			break;
 		}
 
+cleanup:
 		--ih->queue_size;
 		--iw->iw_qrefs;
 		TAILQ_REMOVE(&ih->eventq, iqe, entries);

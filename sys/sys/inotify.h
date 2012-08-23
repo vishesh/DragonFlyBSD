@@ -65,6 +65,7 @@ enum _INOTIFY_FLAGS {
 	IN_IGNORED	    =	0x00008000,
 	IN_ONLYDIR	    =	0x01000000,
 	IN_DONT_FOLLOW	    =	0x02000000,
+	IN_EXCL_UNLINK	    =	0x04000000,
 	IN_MASK_ADD	    =	0x20000000,
 	IN_ISDIR	    =	0x40000000,
 	IN_ONESHOT	    =	0x80000000,
@@ -79,7 +80,6 @@ enum _INOTIFY_FLAGS {
 };
 
 typedef uint32_t    inotify_flags;
-
 
 struct inotify_event {
 	int		wd;
