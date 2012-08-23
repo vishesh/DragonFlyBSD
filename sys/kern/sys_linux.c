@@ -78,7 +78,7 @@ static int	inotify_read(struct file *fp, struct uio *uio,
 static int	inotify_close(struct file *fp);
 static int	inotify_stat(struct file *fp, struct stat *st,
 			struct ucred *cred);
-int		inotify_kqfilter(struct file *fp, struct knote *kn);
+static int	inotify_kqfilter(struct file *fp, struct knote *kn);
 static int	inotify_shutdown(struct file *fp, int how);
 
 static int	inotify_fdalloc(struct filedesc *fdp, int want, int *result);
@@ -140,7 +140,7 @@ fp_open_at(const char *path, int flags, int mode, struct file *rfp,
 	if ((error = falloc(NULL, fpp, NULL)) != 0)
 		return (error);
 	fp = *fpp;
-	if (td->td_proc)
+	if (td->td_proc != NULL)
 		fsetcred(fp, td->td_proc->p_ucred);
 
 	if  ((error = nlookup_init(&nd, path, UIO_SYSSPACE, NLC_LOCKVP)) != 0)
@@ -250,11 +250,15 @@ inotify_init(int flags, int *result)
 	int error;
 
 	iuc = inotify_find_iuc(td->td_ucred->cr_uid);
-	if (iuc->ic_instances >= inotify_max_user_instances)
-		return (EMFILE);
+	if (iuc->ic_instances >= inotify_max_user_instances) {
+		error = EMFILE;
+		goto done;
+	}
 
-	if (flags & ~(IN_CLOEXEC | IN_NONBLOCK))
-		return (EINVAL);
+	if (flags & ~(IN_CLOEXEC | IN_NONBLOCK)) {
+		error = EINVAL;
+		goto done;
+	}
 
 	ih = kmalloc(sizeof(struct inotify_handle), M_INOTIFY, M_WAITOK|M_ZERO);
 	if (ih == NULL) {
@@ -312,18 +316,21 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 	ih = (struct inotify_handle*)fp->f_data;
 	iuc = ih->iuc;
 
-	if (iuc->ic_watches >= inotify_max_user_watches)
-		return (ENOSPC);
+	if (iuc->ic_watches >= inotify_max_user_watches) {
+		error = ENOSPC;
+		goto done;
+	}
 
 
 	if (fp->f_ops != &inotify_fops) {
-		args->sysmsg_iresult = -1;
-		return (EBADF);
+		error = EBADF;
+		goto done;
 	}
 
 	error = copyinstr(args->pathname, path, MAXPATHLEN, &pathlen);
 	if (error == 0 && pathlen <= 1) {
-		return (ENOENT);
+		error = ENOENT;
+		goto done;
 	}
 
 	iht = inotify_find_watch(ih, path);
