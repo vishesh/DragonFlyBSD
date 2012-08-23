@@ -1,13 +1,13 @@
 /*
  * Copyright (c) 2012 The DragonFly Project.  All rights reserved.
- * 
+ *
  * This code is derived from software contributed to The DragonFly Project
  * by Vishesh Yadav <vishesh3y@gmail.com>
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
- * 
+ *
  * 1. Redistributions of source code must retain the above copyright
  *    notice, this list of conditions and the following disclaimer.
  * 2. Redistributions in binary form must reproduce the above copyright
@@ -17,7 +17,7 @@
  * 3. Neither the name of The DragonFly Project nor the names of its
  *    contributors may be used to endorse or promote products derived
  *    from this software without specific, prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
  * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
@@ -30,7 +30,7 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- * 
+ *
  */
 
 #include <sys/inotify.h>
@@ -213,7 +213,7 @@ inotify_find_iuc(uid_t id)
 		if (iuc->ic_uid == id)
 			return (iuc);
 	}
-	
+
 	iuc = kmalloc(sizeof *iuc, M_INOTIFY, M_WAITOK);
 	iuc->ic_uid = id;
 	iuc->ic_watches = 0;
@@ -241,11 +241,11 @@ sys_inotify_init1(struct inotify_init1_args *args)
 
 static int
 inotify_init(int flags, int *result)
-{	
+{
 	struct thread *td = curthread;
 	struct inotify_handle *ih;
 	struct inotify_ucount *iuc;
-	struct file *fp;	
+	struct file *fp;
 	int fd = -1;
 	int error;
 
@@ -451,7 +451,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 	char *dbuf;
 	u_int dcount = sizeof(struct dirent) * 10;
 	long basep = 0;
-	
+
 	error = fp_open(path, O_RDONLY, 0400, &fp);
 	if (error != 0) {
 		kprintf("inotify_add_watch: Error opening file! \n");
@@ -516,7 +516,7 @@ inotify_add_watch(struct inotify_handle *ih, const char *path, uint32_t pathlen,
 				continue;
 
 			/* now check if given entry is again directory
-			 * and this time we ignore them 
+			 * and this time we ignore them
 			 */
 			if (strcmp(direp->d_name, ".") == 0 ||
 					strcmp(direp->d_name, "..") == 0) {
@@ -605,7 +605,7 @@ sys_inotify_rm_watch(struct inotify_rm_watch_args *args)
 		error = EINVAL;
 		goto done;
 	}
-	
+
 	inotify_rm_watch(ih, iw);
 	res = 0;
 
@@ -738,7 +738,7 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			kprintf("inotify_read: error while transferring\n");
 			break;
 		}
-		
+
 		--ih->queue_size;
 		--iw->iw_qrefs;
 		TAILQ_REMOVE(&ih->eventq, iqe, entries);
@@ -773,7 +773,7 @@ inotify_shutdown(struct file *fp, int how)
 
 static int
 inotify_close(struct file *fp)
-{	
+{
 	struct inotify_handle *ih;
 	struct inotify_watch *iw, *iw2;
 	struct inotify_queue_entry *iqe, *iqe_next;
@@ -836,7 +836,7 @@ filt_inotifyread(struct knote *kn, long hint)
 	struct inotify_handle *ih = (struct inotify_handle*)fp->f_data;
 
 	/*
-	 * filesystem is gone, so set the EOF flag and schedule 
+	 * filesystem is gone, so set the EOF flag and schedule
 	 * the knote for deletion.
 	 */
 	if (hint == NOTE_REVOKE) {
@@ -885,7 +885,7 @@ inotify_kqfilter(struct file *fp, struct knote *kn)
 
 static struct inotify_watch*
 inotify_find_watchwd(struct inotify_handle *ih, int wd)
-{	
+{
 	struct inotify_watch *iw;
 
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {
@@ -898,7 +898,7 @@ inotify_find_watchwd(struct inotify_handle *ih, int wd)
 /*XXX: Index the list by pathname for faster lookup */
 static struct inotify_watch*
 inotify_find_watch(struct inotify_handle *ih, const char *path)
-{	
+{
 	struct inotify_watch *iw;
 
 	TAILQ_FOREACH(iw, &ih->wlh, watchlist) {

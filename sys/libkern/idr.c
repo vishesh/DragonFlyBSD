@@ -3,7 +3,7 @@
  *
  * This code is derived from software contributed to The DragonFly Project
  * by Jeffrey Hsu.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -312,7 +312,7 @@ idr_grow(struct idr *idp, int want)
 
 void
 idr_remove(struct idr *idp, int id)
-{	
+{
 	void *ptr;
 
 	if (id >= idp->idr_count)
