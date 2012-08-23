@@ -65,6 +65,9 @@
 #include <vm/vm_pager.h>
 #include <vm/vnode_pager.h>
 
+#define VN_KNOTE(vp, b) \
+	KNOTE((struct klist *)&vp->v_pollinfo.vpi_kqinfo.ki_note, (b))
+
 static int	vop_nolookup (struct vop_old_lookup_args *);
 static int	vop_nostrategy (struct vop_strategy_args *);
 
@@ -1186,6 +1189,7 @@ vop_stdopen(struct vop_open_args *ap)
 		++vp->v_writecount;
 	KKASSERT(vp->v_opencount >= 0 && vp->v_opencount != INT_MAX);
 	++vp->v_opencount;
+	VN_KNOTE(vp, NOTE_OPEN);
 	return (0);
 }
 
@@ -1211,6 +1215,14 @@ vop_stdclose(struct vop_close_args *ap)
 		--vp->v_writecount;
 	}
 	--vp->v_opencount;
+
+	if (ap->a_fflag & FWRITE) {
+		VN_KNOTE(vp, NOTE_CLOSE_WRITE);
+	}
+	else {
+		VN_KNOTE(vp, NOTE_CLOSE_NOWRITE);
+	}
+
 	return (0);
 }
 

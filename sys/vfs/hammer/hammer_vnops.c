@@ -165,6 +165,23 @@ hammer_knote(struct vnode *vp, int flags)
 		KNOTE(&vp->v_pollinfo.vpi_kqinfo.ki_note, flags);
 }
 
+static __inline
+void
+hammer_knote_data(struct vnode *vp, int flags, char *name, int len)
+{
+	if (flags)
+		KNOTE_DATA(&vp->v_pollinfo.vpi_kqinfo.ki_note, flags, name, len);
+}
+
+static __inline
+void
+hammer_knote_cookie(struct vnode *v1, char *n1, int l1,
+		struct vnode *v2, char *n2, int l2)
+{
+	KNOTE_COOKIE(&v1->v_pollinfo.vpi_kqinfo.ki_note, n1, l1,
+			&v2->v_pollinfo.vpi_kqinfo.ki_note, n2, l2);
+}
+
 #ifdef DEBUG_TRUNCATE
 struct hammer_inode *HammerTruncIp;
 #endif
@@ -482,6 +499,10 @@ skip:
 		hammer_done_transaction(&trans);
 		lwkt_reltoken(&hmp->fs_token);
 	}
+
+	if (error == 0)
+		hammer_knote(ap->a_vp, NOTE_ACCESS);
+
 	return (error);
 }
 
@@ -1011,6 +1032,9 @@ hammer_vop_ncreate(struct vop_ncreate_args *ap)
 			cache_setvp(ap->a_nch, *ap->a_vpp);
 		}
 		hammer_knote(ap->a_dvp, NOTE_WRITE);
+		hammer_knote_data(ap->a_dvp, NOTE_CREATE, ap->a_nch->ncp->nc_name,
+				ap->a_nch->ncp->nc_nlen);
+		hammer_knote(ap->a_dvp, NOTE_CREATE);
 	}
 	lwkt_reltoken(&hmp->fs_token);
 	return (error);
@@ -1458,6 +1482,9 @@ hammer_vop_nlink(struct vop_nlink_args *ap)
 	}
 	hammer_done_transaction(&trans);
 	hammer_knote(ap->a_vp, NOTE_LINK);
+	hammer_knote_data(ap->a_dvp, NOTE_CREATE|NOTE_LINK,
+			ap->a_nch->ncp->nc_name, ap->a_nch->ncp->nc_nlen);
+	hammer_knote(ap->a_dvp, NOTE_CREATE);
 	hammer_knote(ap->a_dvp, NOTE_WRITE);
 	lwkt_reltoken(&hmp->fs_token);
 	return (error);
@@ -1635,6 +1662,8 @@ hammer_vop_open(struct vop_open_args *ap)
 
 	if ((ap->a_mode & FWRITE) && (ip->flags & HAMMER_INODE_RO))
 		return (EROFS);
+
+	hammer_knote(ap->a_vp, NOTE_OPEN);
 	return(vop_stdopen(ap));
 }
 
@@ -2103,6 +2132,10 @@ retry:
 	 */
         hammer_done_cursor(&cursor);
 	if (error == 0) {
+		hammer_knote_cookie(ip->vp, ap->a_fnch->ncp->nc_name,
+				ap->a_fnch->ncp->nc_nlen,
+				ap->a_tdvp, ap->a_tnch->ncp->nc_name,
+				ap->a_tnch->ncp->nc_nlen);
 		cache_rename(ap->a_fnch, ap->a_tnch);
 		hammer_knote(ap->a_fdvp, NOTE_WRITE);
 		hammer_knote(ap->a_tdvp, NOTE_WRITE);

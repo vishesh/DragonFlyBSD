@@ -371,4 +371,8 @@
 #define	SYS_swapoff	529
 #define	SYS_vquotactl	530
 #define	SYS_linkat	531
-#define	SYS_MAXSYSCALL	532
+#define	SYS_inotify_init	532
+#define	SYS_inotify_init1	533
+#define	SYS_inotify_add_watch	534
+#define	SYS_inotify_rm_watch	535
+#define	SYS_MAXSYSCALL	536

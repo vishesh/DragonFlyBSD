@@ -310,4 +310,8 @@ MIASM =  \
 	symlinkat.o \
 	swapoff.o \
 	vquotactl.o \
-	linkat.o
+	linkat.o \
+	inotify_init.o \
+	inotify_init1.o \
+	inotify_add_watch.o \
+	inotify_rm_watch.o
