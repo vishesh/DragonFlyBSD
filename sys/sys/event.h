@@ -112,13 +112,13 @@ struct kevent {
 #define	NOTE_RENAME	0x0020			/* vnode was renamed */
 #define	NOTE_REVOKE	0x0040			/* vnode access was revoked */
 
-#define NOTE_ACCESS		0x0080
-#define NOTE_OPEN		0x0100
-#define NOTE_CLOSE_WRITE	0x0200
-#define NOTE_CLOSE_NOWRITE	0x0400
-#define NOTE_CREATE		0x0800
-#define NOTE_MOVED_TO		0x1000
-#define NOTE_MOVED_FROM		0x2000
+#define NOTE_ACCESS		0x0080	/* vnode was accessed */
+#define NOTE_OPEN		0x0100	/* vnode was opened */
+#define NOTE_CLOSE_WRITE	0x0200	/* vnode opened for writing closed */
+#define NOTE_CLOSE_NOWRITE	0x0400	/* vnode not opened for writing closed*/
+#define NOTE_CREATE		0x0800	/* file/dir created in directory */
+#define NOTE_MOVED_TO		0x1000	/* vnode moved into directory */
+#define NOTE_MOVED_FROM		0x2000	/* vnode moved out of directory */
 
 #define NOTE_CLOSE	(NOTE_CLOSE_WRITE | NOTE_CLOSE_NOWRITE)
 

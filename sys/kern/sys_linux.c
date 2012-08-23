@@ -675,7 +675,6 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	inotify_delete_watch(iw);
 }
 
-/* TODO: Order IN_MOVED_TO and IN_MOVED_FROM events by marking or otherwise */
 static int
 inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 {
