@@ -339,6 +339,7 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 		goto done;
 	}
 
+	/* See if watch already exisits and update the masks accordingly */
 	iht = inotify_find_watch(ih, path);
 	if (iht != NULL) {
 		if (args->mask & IN_MASK_ADD) {
@@ -351,6 +352,7 @@ sys_inotify_add_watch(struct inotify_add_watch_args *args)
 		goto done;
 	}
 
+	/* Add a new watch */
 	error = inotify_add_watch(ih, path, pathlen-1, args->mask, &res);
 	if (error != 0) {
 		kprintf("inotify_add_watch syscall: Error adding watch!\n");
@@ -396,6 +398,9 @@ INOTIFY_WATCH_INIT(struct inotify_watch **_iw, struct file *_fp, int _wd,
 	return (0);
 }
 
+/* Simply append a child watch pointed by 'child' and already
+ * initialized to the watchlist.
+ */
 static void
 inotify_insert_child(struct inotify_handle *ih, struct inotify_watch *child)
 {
@@ -404,7 +409,6 @@ inotify_insert_child(struct inotify_handle *ih, struct inotify_watch *child)
 	++ih->nchilds;
 	++ih->iuc->ic_watches;
 }
-
 
 static struct inotify_watch*
 inotify_insert_child_watch(struct inotify_watch *parent, const char *path)
@@ -423,6 +427,7 @@ inotify_insert_child_watch(struct inotify_watch *parent, const char *path)
 	if (error != 0)
 		return (NULL);
 
+	/* Add entry to fdp */
 	error = inotify_fdalloc(ih->wfdp, 1, &wd);
 	if (error != 0)
 		goto done;
@@ -623,6 +628,11 @@ done:
 static void
 inotify_delete_watch(struct inotify_watch *iw)
 {
+	/* fp may have been closed earlier by previous
+	 * call to this function with same iw, which 
+	 * ignores to free iw and iw->pathname if there 
+	 * are pending events in queue. Hence we check.
+	 */
 	if (iw->fp != NULL) {
 		fp_close(iw->fp);
 		iw->fp = NULL;
@@ -636,6 +646,9 @@ inotify_delete_watch(struct inotify_watch *iw)
 	kfree(iw, M_INOTIFY);
 }
 
+/* Remove a child watch (not accessible to user). Required
+ * when a node in a directory is deleted
+ */
 static void
 inotify_remove_child(struct inotify_watch *iw)
 {
@@ -654,6 +667,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 	struct inotify_watch *w1, *wtemp;
 	struct inotify_ucount *iuc = ih->iuc;
 
+	/* Clean up the childs first */
 	iuc->ic_watches -= iw->childs + 1;
 	ih->nchilds -= iw->childs + 1;
 	if (iw->childs > 0) {
@@ -668,6 +682,7 @@ inotify_rm_watch(struct inotify_handle *ih, struct inotify_watch *iw)
 		}
 	}
 
+	/* Now clean up root watch */
 	knote_fdclose(iw->fp, ih->wfdp, iw->wd);
 	TAILQ_REMOVE(&ih->wlh, iw, watchlist);
 	funsetfd(ih->wfdp, iw->wd);
@@ -709,6 +724,10 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 	TAILQ_FOREACH_MUTABLE(iqe, &ih->eventq, entries, iqe_temp) {
 		iw = iqe->iw;
 
+		/* Events for unliked files can still be in event queue. 
+		 * When IN_EXCL_UNLINK is set we are supposed to ignore 
+		 * these events.
+		 */
 		if ((iw->mask & IN_EXCL_UNLINK) > 0 &&
 			((iw->mask & IW_MARKED_FOR_DELETE) > 0 ||
 			 (iw->mask & IW_WATCH_DELETE) > 0)) {
@@ -716,6 +735,9 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 		}
 
 		if (iw->parent == NULL) {
+			/* Except for IN_CREATE, every event for parents
+			 * don't need filename in inotify_event
+			 */
 			eventlen = INOTIFY_EVENT_SIZE;
 			if ((iqe->mask & IN_CREATE) > 0 ||
 					(iqe->mask & IN_MOVED_TO) > 0) {
@@ -744,6 +766,7 @@ inotify_read(struct file *fp, struct uio *uio, struct ucred *cred, int flags)
 			}
 		}
 
+		/* Buffer full */
 		if (uio->uio_resid < eventlen)
 			break;
 
@@ -762,6 +785,7 @@ cleanup:
 		TAILQ_REMOVE(&ih->eventq, iqe, entries);
 		kfree(iqe, M_INOTIFY);
 
+		/* Check if current watch can be cleaned up */
 		if ((iw->mask & IN_ONESHOT) > 0) {
 			if (iw->parent == NULL) {
 				inotify_rm_watch(ih, iw);
@@ -789,6 +813,7 @@ inotify_shutdown(struct file *fp, int how)
 	return (0);
 }
 
+/* Close a inotify handle file */
 static int
 inotify_close(struct file *fp)
 {
@@ -803,12 +828,14 @@ inotify_close(struct file *fp)
 	--ih->iuc->ic_instances;
 	ih->iuc->ic_watches -= ih->nchilds;
 
+	/* Empty event queue */
 	iqe = TAILQ_FIRST(&ih->eventq);
 	TAILQ_FOREACH_MUTABLE(iqe, &ih->eventq, entries, iqe_next) {
 		TAILQ_REMOVE(&ih->eventq, iqe, entries);
 		kfree(iqe, M_INOTIFY);
 	}
 
+	/* Close and cleanup all watches */
 	iw = TAILQ_FIRST(&ih->wlh);
 	while (iw != NULL) {
 		iw2 = TAILQ_NEXT(iw, watchlist);
@@ -818,6 +845,7 @@ inotify_close(struct file *fp)
 		iw = iw2;
 	}
 
+	/* clean file descriptor table */
 	if (fdp->fd_files != fdp->fd_builtin_files) {
 		kfree(fdp->fd_files, M_INOTIFY);
 	}
@@ -901,6 +929,7 @@ inotify_kqfilter(struct file *fp, struct knote *kn)
 	return (0);
 }
 
+/* Search watch by wd. Ignores child watches. */
 static struct inotify_watch*
 inotify_find_watchwd(struct inotify_handle *ih, int wd)
 {
@@ -914,6 +943,7 @@ inotify_find_watchwd(struct inotify_handle *ih, int wd)
 }
 
 /*XXX: Index the list by pathname for faster lookup */
+/* Search watch by pathname. Ignores child watches. */
 static struct inotify_watch*
 inotify_find_watch(struct inotify_handle *ih, const char *path)
 {
@@ -1263,7 +1293,13 @@ inotify_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 	return (0);
 }
 
-/* Create and set new queue entry and append it to event queue */
+/* Create and set new queue entry and append it to event queue.
+ * 
+ * NOTE: Queues events only if the 'hint' passed is set in the mask.
+ * We pass additional 'mask' parameter inspite of iw, so that we can use this
+ * function otherwise (i.e. iw->mask doesnt have hint set) as well to queue 
+ * events.
+ */
 static void
 inotify_queue_event(struct inotify_watch *iw, inotify_flags mask,
 		inotify_flags hint, const char *filename, int cookie)
@@ -1272,6 +1308,7 @@ inotify_queue_event(struct inotify_watch *iw, inotify_flags mask,
 	struct inotify_handle *ih = iw->handle;
 	int namelen = 0;
 
+	/* check if we should ignore queuing new event for this watch */
 	if ((iw->mask & IN_ONESHOT) && ((iw->iw_marks & IW_GOT_ONESHOT) ||
 				(iw->parent != NULL &&
 				 iw->parent->iw_marks & IW_GOT_ONESHOT))) {
@@ -1362,6 +1399,11 @@ inotify_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					ikap);
 		}
 
+		/* The called function here checks if rmask has the given
+		 * hint set, hence we call for each possible hint and let
+		 * the callee decide if the given hint should be queued up
+		 * in event
+		 */
 		inotify_queue_event(iw, rmask, IN_OPEN, NULL, 0);
 		inotify_queue_event(iw, rmask, IN_ACCESS, NULL, 0);
 		inotify_queue_event(iw, rmask, IN_MODIFY, NULL, 0);

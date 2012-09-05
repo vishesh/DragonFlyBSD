@@ -109,6 +109,7 @@ struct inotify_ucount {
 	SLIST_ENTRY(inotify_ucount) ic_entry;
 };
 
+/* Event queue entry in kernel */
 struct inotify_queue_entry {
 	TAILQ_ENTRY(inotify_queue_entry) entries;
 	struct inotify_watch	*iw;
@@ -118,9 +119,11 @@ struct inotify_queue_entry {
 	char			 name[0];
 };
 
+/* Represents an inotify instance */
 struct inotify_handle {
 	struct file	    *fp;
-	unsigned int	     queue_size;
+	unsigned int	     queue_size;	    /* number of events in
+						       queue*/
 	unsigned int	     nchilds;		    /* number of childs */
 	struct filedesc	    *wfdp;
 	struct kqueue	     kq;
@@ -135,11 +138,11 @@ struct inotify_watch {
 	struct file	*fp;
 	uint32_t	 pathlen;
 	char		*pathname;
-	int		 childs;
-	uint		 iw_qrefs;
-	int16_t		 iw_marks;
+	int		 childs;	      /* Number of childs */
+	uint		 iw_qrefs;	      /* Queue size for this watch */
+	int16_t		 iw_marks;	      /* Additional marks */
 	struct inotify_handle *handle;
-	struct inotify_watch  *parent;
+	struct inotify_watch  *parent;	      /* Parent watch if any */
 	TAILQ_HEAD(, kevent_note_entry) knel; /* event queue */
 	TAILQ_ENTRY(inotify_watch) watchlist; /* watches */
 };

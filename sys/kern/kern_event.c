@@ -1331,6 +1331,12 @@ filter_event(struct knote *kn, long hint)
 	return (ret);
 }
 
+/**
+ * This is used to bind NOTE_MOVED_FROM and NOTE_MOVED_TO
+ * events using a unique integer, to identify renames. The
+ * kn_sdata memeber of knote points to the list head whose
+ * each entry contains the name.
+ */
 void
 knote_cookie(struct klist *list1, char *n1, int l1,
 		struct klist *list2, char *n2, int l2)
@@ -1344,6 +1350,7 @@ knote_cookie(struct klist *list1, char *n1, int l1,
 	cookie = ++inotify_cookie;
 	spin_unlock(&inotify_cookie_lock);
 
+	/* Append the old file name with NOTE_MOVED_FROM hint */
 	SLIST_FOREACH(kn, list1, kn_next) {
 		kevp = &kn->kn_kevent;
 		if (kn->kn_sdata == 0)
@@ -1363,6 +1370,7 @@ knote_cookie(struct klist *list1, char *n1, int l1,
 	}
 	knote(list1, NOTE_MOVED_FROM);
 
+	/* Append the new file name with NOTE_MOVED_FROM hint */
 	SLIST_FOREACH(kn, list2, kn_next) {
 		kevp = &kn->kn_kevent;
 		if (kn->kn_sdata == 0)
@@ -1381,6 +1389,11 @@ knote_cookie(struct klist *list1, char *n1, int l1,
 	knote(list2, NOTE_MOVED_TO);
 }
 
+/* Sets data paremeter for all kevents in list. Used by NOTE_CREATE
+ * to set the filename of the newly created file. The data is expected
+ * to be list, to which we append 'name' so that in case of merging of 
+ * knotes we don't lose earlier data.
+ */
 void
 knote_data(struct klist *list, int hint, char *name, int len)
 {
